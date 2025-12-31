@@ -37,10 +37,11 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
   
+  // Dados da empresa agora inicializados com os valores fornecidos
   const [companyProfile, setCompanyProfile] = useState<ServiceOrder['company']>({
     name: 'MD DIESEL',
-    cnpj: '',
-    phone: '',
+    cnpj: '57.833.594/0001-39',
+    phone: '(27) 99526-1557',
     logoUrl: 'https://zozuufcvskbmdsppexsy.supabase.co/storage/v1/object/public/assets/logo_md_diesel.png'
   });
 
@@ -105,12 +106,17 @@ const App: React.FC = () => {
     try {
       const localProfile = localStorage.getItem('md_diesel_profile');
       if (localProfile) {
-        setCompanyProfile(JSON.parse(localProfile));
+        const parsed = JSON.parse(localProfile);
+        // Garantir que se o local for antigo, usamos os novos dados fixos se estiverem vazios
+        setCompanyProfile({
+          ...companyProfile,
+          ...parsed
+        });
       }
 
       const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').single();
       if (profileData?.value) {
-        setCompanyProfile(profileData.value);
+        setCompanyProfile(prev => ({ ...prev, ...profileData.value }));
         localStorage.setItem('md_diesel_profile', JSON.stringify(profileData.value));
       }
 
@@ -156,7 +162,7 @@ const App: React.FC = () => {
         id: order.id,
         client_name: order.client.name,
         vehicle_plate: order.vehicle.plate,
-        total_value: order.values.labor + order.values.travel,
+        total_value: (order.values.labor + order.values.travel + (order.serviceItems?.reduce((acc, curr) => acc + curr.value, 0) || 0)),
         content: orderToSave
       });
       
@@ -211,6 +217,11 @@ const App: React.FC = () => {
     const newItems = [...(order.serviceItems || [])];
     newItems[index] = { ...newItems[index], [field]: value };
     setOrder({ ...order, serviceItems: newItems });
+  };
+
+  const calculateTotal = (targetOrder: ServiceOrder) => {
+    const itemsTotal = (targetOrder.serviceItems || []).reduce((acc, curr) => acc + curr.value, 0);
+    return itemsTotal + targetOrder.values.labor + targetOrder.values.travel;
   };
 
   const downloadPDF = async (targetOrder: ServiceOrder) => {
@@ -327,7 +338,11 @@ const App: React.FC = () => {
                </div>
                <div className="border-2 border-[#1b2e85] rounded-xl overflow-hidden shadow-sm">
                   <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
-                     <span className="text-slate-400 uppercase">SUBTOTAL SERVIÇOS</span>
+                     <span className="text-slate-400 uppercase">SUBTOTAL ITENS</span>
+                     <span className="text-[#1b2e85]">R$ {(previewOrder.serviceItems?.reduce((acc, curr) => acc + curr.value, 0) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
+                     <span className="text-slate-400 uppercase">MÃO DE OBRA ADIC.</span>
                      <span className="text-[#1b2e85]">R$ {previewOrder.values.labor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   </div>
                   <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
@@ -336,7 +351,7 @@ const App: React.FC = () => {
                   </div>
                   <div className="p-3.5 bg-[#1b2e85] text-white flex justify-between items-center">
                      <span className="font-black text-[9px] tracking-widest uppercase">TOTAL GERAL</span>
-                     <span className="text-xl font-black italic">R$ {(previewOrder.values.labor + previewOrder.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                     <span className="text-xl font-black italic">R$ {calculateTotal(previewOrder).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   </div>
                </div>
             </div>
@@ -413,7 +428,7 @@ const App: React.FC = () => {
                 <Input label="Razão Social" value={order.company.name} onChange={e => setOrder({...order, company: {...order.company, name: e.target.value}})} placeholder="Ex: MD DIESEL LTDA" />
                 <Input label="CNPJ" value={order.company.cnpj} onChange={e => setOrder({...order, company: {...order.company, cnpj: e.target.value}})} placeholder="00.000.000/0001-00" />
                 <Input label="WhatsApp/Contato" value={order.company.phone} onChange={e => setOrder({...order, company: {...order.company, phone: e.target.value}})} placeholder="(00) 00000-0000" />
-                <p className="text-[9px] text-slate-300 font-bold uppercase text-center mt-2">Esses dados serão salvos como padrão ao gravar a OS.</p>
+                <p className="text-[9px] text-slate-400 font-bold uppercase text-center mt-2 bg-slate-50 py-1.5 rounded-lg border border-slate-100 italic">Estes dados já estão configurados como padrão.</p>
               </section>
 
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -441,10 +456,10 @@ const App: React.FC = () => {
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <DollarSign size={18} className="text-[#1b2e85]" />
-                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Resumo Financeiro</h3>
+                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Informações Adicionais</h3>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <Input label="Mão de Obra (R$)" type="number" value={order.values.labor} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
+                  <Input label="Mão de Obra Adic. (R$)" type="number" value={order.values.labor} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
                   <Input label="Deslocamento (R$)" type="number" value={order.values.travel} onChange={e => setOrder({...order, values: {...order.values, travel: Number(e.target.value)}})} />
                 </div>
                 <label className="text-[10px] font-black uppercase text-slate-400">Método de Pagamento</label>
@@ -476,15 +491,15 @@ const App: React.FC = () => {
                     <div key={index} className="flex gap-3 items-end group animate-in slide-in-from-right-2 duration-200">
                       <div className="flex-1">
                         <Input 
-                          label={index === 0 ? "Descrição Detalhada" : ""} 
+                          label={index === 0 ? "Descrição do Item/Serviço" : ""} 
                           value={item.description} 
                           onChange={e => updateServiceItem(index, 'description', e.target.value)} 
-                          placeholder="Ex: Regulagem de válvulas e bicos"
+                          placeholder="Ex: Troca de óleo do motor"
                         />
                       </div>
                       <div className="w-32">
                         <Input 
-                          label={index === 0 ? "Valor Item (R$)" : ""} 
+                          label={index === 0 ? "Valor (R$)" : ""} 
                           type="number" 
                           value={item.value} 
                           onChange={e => updateServiceItem(index, 'value', Number(e.target.value))} 
@@ -506,14 +521,14 @@ const App: React.FC = () => {
                 <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/5 to-transparent pointer-events-none"></div>
                 <span className="text-sky-300 text-[11px] font-black uppercase mb-2 tracking-[0.3em]">VALOR TOTAL DA ORDEM</span>
                 <div className="text-5xl sm:text-6xl font-black text-white italic drop-shadow-lg">
-                  R$ {(order.values.labor + order.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  R$ {calculateTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </div>
               </section>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4 pt-6">
               <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-emerald-800 group">
-                <Save size={26} className="group-hover:scale-110 transition-transform"/> GRAVAR OS E PERFIL
+                <Save size={26} className="group-hover:scale-110 transition-transform"/> GRAVAR ORDEM DE SERVIÇO
               </button>
               <button onClick={() => order.client.name ? setPreviewOrder(order) : alert("Preencha ao menos o nome do cliente.")} className="bg-sky-600 hover:bg-sky-500 text-white px-10 py-6 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 border-b-4 border-sky-800 flex items-center justify-center gap-3">
                 <FileDown size={26} /> PREVIEW PDF
@@ -552,7 +567,7 @@ const App: React.FC = () => {
                     </p>
                     <div className="pt-5 border-t border-slate-50 text-3xl font-black text-[#1b2e85] italic">
                       <span className="text-[10px] font-bold text-slate-300 mr-2 uppercase not-italic">Total</span>
-                      R$ {(item.values.labor + item.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      R$ {calculateTotal(item).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </div>
                   </div>
                   <div className="bg-slate-50 p-5 grid grid-cols-3 gap-3 border-t border-slate-100">
