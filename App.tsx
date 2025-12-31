@@ -36,13 +36,19 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const html2pdf = window.html2pdf;
 
 const App: React.FC = () => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'list'>('form');
   const [savedOrders, setSavedOrders] = useState<ServiceOrder[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
-  const [currentLogo, setCurrentLogo] = useState('https://zozuufcvskbmdsppexsy.supabase.co/storage/v1/object/public/assets/logo_md_diesel.png');
+  
+  // Dados fixos da empresa persistidos
+  const [companyProfile, setCompanyProfile] = useState({
+    name: 'MD DIESEL',
+    cnpj: '',
+    phone: '',
+    logoUrl: 'https://zozuufcvskbmdsppexsy.supabase.co/storage/v1/object/public/assets/logo_md_diesel.png'
+  });
 
   const getNextNumericId = (orders: ServiceOrder[]) => {
     if (!orders || orders.length === 0) return 1;
@@ -56,12 +62,21 @@ const App: React.FC = () => {
 
   const formatId = (num: number) => `OS-${String(num).padStart(4, '0')}`;
 
-  const createInitialOrder = (ordersList: ServiceOrder[]): ServiceOrder => {
+  // Função auxiliar para pegar data local no formato YYYY-MM-DD
+  const getLocalDateString = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const createInitialOrder = (ordersList: ServiceOrder[], currentCompany: any): ServiceOrder => {
     const nextNum = getNextNumericId(ordersList);
     return {
       id: formatId(nextNum),
-      date: new Date().toISOString().split('T')[0],
-      company: { name: 'MD DIESEL', cnpj: '', phone: '', logoUrl: currentLogo },
+      date: getLocalDateString(),
+      company: { ...currentCompany },
       client: { name: '', idNumber: '', phone: '' },
       vehicle: { type: VehicleType.TRUCK, brand: '', model: '', plate: '', mileage: '' },
       serviceDescription: '',
@@ -73,9 +88,16 @@ const App: React.FC = () => {
     };
   };
 
-  const [order, setOrder] = useState<ServiceOrder>(() => createInitialOrder([]));
+  const [order, setOrder] = useState<ServiceOrder>(() => createInitialOrder([], companyProfile));
 
   useEffect(() => { fetchInitialData(); }, []);
+
+  // Sincroniza o perfil da empresa com a ordem atual se ela for nova
+  useEffect(() => {
+    if (activeTab === 'form' && !order.client.name && !order.vehicle.plate) {
+      setOrder(prev => ({ ...prev, company: { ...companyProfile } }));
+    }
+  }, [companyProfile, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'form' && !order.client.name && !order.vehicle.plate) {
@@ -89,8 +111,19 @@ const App: React.FC = () => {
   const fetchInitialData = async () => {
     setLoading(true);
     try {
-      const { data: settingsData } = await supabase.from('settings').select('value').eq('id', 'official_logo').single();
-      if (settingsData?.value) setCurrentLogo(settingsData.value);
+      // Tenta carregar perfil da empresa do localStorage primeiro
+      const localProfile = localStorage.getItem('md_diesel_profile');
+      if (localProfile) {
+        setCompanyProfile(JSON.parse(localProfile));
+      }
+
+      // Tenta carregar do Supabase (settings)
+      const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').single();
+      if (profileData?.value) {
+        setCompanyProfile(profileData.value);
+        localStorage.setItem('md_diesel_profile', JSON.stringify(profileData.value));
+      }
+
       const { data: ordersData, error: ordersError } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
       if (ordersError) throw ordersError;
       if (ordersData) {
@@ -110,7 +143,7 @@ const App: React.FC = () => {
   };
 
   const handleNewOrder = () => {
-    setOrder(createInitialOrder(savedOrders));
+    setOrder(createInitialOrder(savedOrders, companyProfile));
     setActiveTab('form');
     window.scrollTo(0, 0);
   };
@@ -122,7 +155,15 @@ const App: React.FC = () => {
     }
     setLoading(true);
     try {
-      const orderToSave = { ...order, company: { ...order.company, logoUrl: currentLogo } };
+      // Salva os dados da empresa como perfil padrão
+      const currentCompany = { ...order.company };
+      setCompanyProfile(currentCompany);
+      localStorage.setItem('md_diesel_profile', JSON.stringify(currentCompany));
+      
+      // Tenta persistir perfil no Supabase de forma assíncrona (opcional)
+      supabase.from('settings').upsert({ id: 'company_profile', value: currentCompany }).then();
+
+      const orderToSave = { ...order };
       await supabase.from('orders').upsert({
         id: order.id,
         client_name: order.client.name,
@@ -130,16 +171,18 @@ const App: React.FC = () => {
         total_value: order.values.labor + order.values.travel,
         content: orderToSave
       });
+      
       const exists = savedOrders.find(o => o.id === order.id);
       const newOrders = exists 
         ? savedOrders.map(o => o.id === order.id ? orderToSave : o) 
         : [orderToSave, ...savedOrders];
+      
       setSavedOrders(newOrders);
       localStorage.setItem('md_diesel_orders', JSON.stringify(newOrders));
-      alert("Ordem de Serviço salva!");
+      alert("Ordem de Serviço salva com sucesso!");
       setActiveTab('list');
     } catch(err) {
-      alert("Erro ao salvar no servidor.");
+      alert("Erro ao salvar no servidor. Dados mantidos localmente.");
     } finally { setLoading(false); }
   };
 
@@ -190,8 +233,8 @@ const App: React.FC = () => {
       const opt = {
         margin: 0,
         filename: `OS_${targetOrder.id}_MD_DIESEL.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
+        image: { type: 'jpeg', quality: 1 },
+        html2canvas: { scale: 3, useCORS: true, logging: false },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
       };
       await html2pdf().set(opt).from(element).save();
@@ -211,71 +254,79 @@ const App: React.FC = () => {
     });
   }, [savedOrders, searchTerm]);
 
+  // Função para formatar data do YYYY-MM-DD para PT-BR sem erros de fuso
+  const formatDisplayDate = (dateStr: string) => {
+    if (!dateStr) return '---';
+    const [year, month, day] = dateStr.split('-');
+    return `${day}/${month}/${year}`;
+  };
+
   if (previewOrder) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center p-4 no-print animate-in zoom-in-95 duration-300">
         <div className="max-w-[210mm] w-full flex justify-between items-center mb-6">
            <button onClick={() => setPreviewOrder(null)} className="flex items-center gap-2 text-white/50 hover:text-white font-black text-xs uppercase transition-all">
-             <ArrowLeft size={18} /> VOLTAR
+             <ArrowLeft size={18} /> VOLTAR AO EDITOR
            </button>
            <button onClick={() => downloadPDF(previewOrder)} className="bg-sky-500 hover:bg-sky-400 text-white px-8 py-3 rounded-xl font-black shadow-xl flex items-center gap-3 text-sm uppercase">
-             <Printer size={20} /> BAIXAR PDF
+             <Printer size={20} /> IMPRIMIR / SALVAR PDF
            </button>
         </div>
 
-        <div id="pdf-content-to-print" className="bg-white w-[210mm] h-[297mm] p-[12mm] text-slate-800 flex flex-col shadow-2xl relative overflow-hidden">
-            <div className="border-b-[4px] border-[#1b2e85] pb-4 mb-5 flex justify-between items-end">
+        {/* Container fixo em 297mm para garantir apenas 1 página no PDF */}
+        <div id="pdf-content-to-print" className="bg-white w-[210mm] h-[297mm] p-[10mm] text-slate-800 flex flex-col shadow-2xl relative overflow-hidden">
+            <div className="border-b-[5px] border-[#1b2e85] pb-4 mb-4 flex justify-between items-end">
                <div>
-                  <h2 className="text-4xl font-black text-[#1b2e85] tracking-tighter mb-1 uppercase italic">{previewOrder.company.name || 'MD DIESEL'}</h2>
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">SISTEMA GESTOR DE MANUTENÇÃO DIESEL</p>
+                  <h2 className="text-4xl font-black text-[#1b2e85] tracking-tighter mb-0 uppercase italic leading-none">{previewOrder.company.name || 'MD DIESEL'}</h2>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">SISTEMA GESTOR DE MANUTENÇÃO PESADA</p>
                </div>
                <div className="text-right">
-                  <div className="bg-[#1b2e85] text-white px-5 py-2 rounded-xl font-black text-xl italic inline-block">OS: {previewOrder.id}</div>
-                  <p className="mt-2 font-black text-slate-400 text-[9px] uppercase tracking-tighter">EMITIDO EM: {new Date(previewOrder.date).toLocaleDateString('pt-BR')}</p>
+                  <div className="bg-[#1b2e85] text-white px-6 py-2 rounded-xl font-black text-2xl italic inline-block">OS: {previewOrder.id}</div>
+                  <p className="mt-2 font-black text-slate-400 text-[10px] uppercase tracking-tighter">EMITIDO: {formatDisplayDate(previewOrder.date)}</p>
                </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-3 mb-5">
-               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest">DADOS DA EMPRESA</h4>
-                  <p className="text-[11px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.company.name || 'MD DIESEL'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold">CNPJ: {previewOrder.company.cnpj || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold">TEL: {previewOrder.company.phone || '---'}</p>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest flex items-center gap-1"><Building2 size={8}/> DADOS DA EMPRESA</h4>
+                  <p className="text-[10px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.company.name}</p>
+                  <p className="text-[9px] text-slate-500 font-bold leading-tight">CNPJ: {previewOrder.company.cnpj || '---'}</p>
+                  <p className="text-[9px] text-slate-500 font-bold leading-tight">TEL: {previewOrder.company.phone || '---'}</p>
                </div>
-               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest">DADOS DO CLIENTE</h4>
-                  <p className="text-[11px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.client.name || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold">CPF/CNPJ: {previewOrder.client.idNumber || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold">WHATSAPP: {previewOrder.client.phone || '---'}</p>
+               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest flex items-center gap-1"><User size={8}/> DADOS DO CLIENTE</h4>
+                  <p className="text-[10px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.client.name || '---'}</p>
+                  <p className="text-[9px] text-slate-500 font-bold leading-tight">CPF/CNPJ: {previewOrder.client.idNumber || '---'}</p>
+                  <p className="text-[9px] text-slate-500 font-bold leading-tight">TEL: {previewOrder.client.phone || '---'}</p>
                </div>
-               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest">DADOS DO VEÍCULO</h4>
-                  <p className="text-[11px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.vehicle.brand} {previewOrder.vehicle.model || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold">PLACA: <span className="text-[#1b2e85] font-black">{previewOrder.vehicle.plate || '---'}</span></p>
-                  <p className="text-[9px] text-slate-500 font-bold">KM/HORAS: {previewOrder.vehicle.mileage || '---'}</p>
+               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest flex items-center gap-1"><Truck size={8}/> DADOS DO VEÍCULO</h4>
+                  <p className="text-[10px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.vehicle.brand} {previewOrder.vehicle.model || '---'}</p>
+                  <p className="text-[9px] text-slate-500 font-bold leading-tight uppercase">PLACA: <span className="text-[#1b2e85] font-black">{previewOrder.vehicle.plate || '---'}</span></p>
+                  <p className="text-[9px] text-slate-500 font-bold leading-tight uppercase">KM/H: {previewOrder.vehicle.mileage || '---'}</p>
                </div>
             </div>
 
-            <div className="border border-slate-200 rounded-xl mb-5 flex-1 overflow-hidden min-h-[300px]">
+            <div className="border border-slate-200 rounded-xl mb-4 flex-1 overflow-hidden min-h-[350px]">
                <table className="w-full text-left border-collapse">
                  <thead>
                    <tr className="bg-slate-100 border-b border-slate-200">
-                     <th className="px-5 py-2.5 text-[8px] font-black text-[#1b2e85] uppercase tracking-widest">DESCRIÇÃO DOS SERVIÇOS REALIZADOS</th>
-                     <th className="px-5 py-2.5 text-[8px] font-black text-[#1b2e85] uppercase tracking-widest text-right w-36">VALOR (R$)</th>
+                     <th className="px-5 py-2.5 text-[8px] font-black text-[#1b2e85] uppercase tracking-widest">DESCRIÇÃO DOS SERVIÇOS</th>
+                     <th className="px-5 py-2.5 text-[8px] font-black text-[#1b2e85] uppercase tracking-widest text-right w-32">VALOR (R$)</th>
                    </tr>
                  </thead>
-                 <tbody className="text-[11px]">
+                 <tbody className="text-[10.5px]">
                    {(previewOrder.serviceItems || []).map((item, idx) => (
-                     <tr key={idx} className="border-b border-slate-50 last:border-0">
-                       <td className="px-5 py-2.5 font-bold text-slate-700 uppercase">{item.description || '---'}</td>
-                       <td className="px-5 py-2.5 font-black text-slate-900 text-right">
+                     <tr key={idx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50">
+                       <td className="px-5 py-2 font-bold text-slate-700 uppercase">{item.description || '---'}</td>
+                       <td className="px-5 py-2 font-black text-slate-900 text-right">
                          {item.value > 0 ? item.value.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '---'}
                        </td>
                      </tr>
                    ))}
-                   {/* Linhas vazias para preencher o espaço se necessário */}
-                   {Array.from({ length: Math.max(0, 10 - (previewOrder.serviceItems?.length || 0)) }).map((_, i) => (
-                     <tr key={`empty-${i}`} className="border-b border-slate-50 last:border-0 h-8">
+                   {/* Linhas vazias adaptáveis para manter uma estética de formulário profissional */}
+                   {Array.from({ length: Math.max(0, 15 - (previewOrder.serviceItems?.length || 0)) }).map((_, i) => (
+                     <tr key={`empty-${i}`} className="border-b border-slate-50 last:border-0 h-6">
                        <td></td>
                        <td></td>
                      </tr>
@@ -284,31 +335,33 @@ const App: React.FC = () => {
                </table>
             </div>
 
-            <div className="grid grid-cols-2 gap-5 items-end mb-6">
-               <div className="bg-slate-900 text-white p-5 rounded-xl">
-                  <p className="text-[7px] font-black text-sky-400 uppercase tracking-widest mb-1">MÉTODO DE PAGAMENTO</p>
-                  <p className="text-lg font-black uppercase italic tracking-tighter">{previewOrder.paymentMethod}</p>
+            <div className="grid grid-cols-2 gap-4 items-end mb-4">
+               <div className="bg-slate-900 text-white p-4 rounded-xl border-l-4 border-sky-400">
+                  <p className="text-[7px] font-black text-sky-400 uppercase tracking-widest mb-1">PAGAMENTO</p>
+                  <p className="text-base font-black uppercase italic">{previewOrder.paymentMethod}</p>
                </div>
                <div className="border-2 border-[#1b2e85] rounded-xl overflow-hidden shadow-sm">
-                  <div className="px-4 py-2 flex justify-between border-b border-slate-100 bg-slate-50 text-[9px] font-bold">
-                     <span className="text-slate-400">SUBTOTAL SERVIÇOS</span>
+                  <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
+                     <span className="text-slate-400 uppercase">SUBTOTAL SERVIÇOS</span>
                      <span className="text-[#1b2e85]">R$ {previewOrder.values.labor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   </div>
-                  <div className="px-4 py-2 flex justify-between border-b border-slate-100 bg-slate-50 text-[9px] font-bold">
-                     <span className="text-slate-400">DESLOCAMENTO</span>
+                  <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
+                     <span className="text-slate-400 uppercase">DESLOCAMENTO</span>
                      <span className="text-[#1b2e85]">R$ {previewOrder.values.travel.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   </div>
-                  <div className="p-4 bg-[#1b2e85] text-white flex justify-between items-center">
-                     <span className="font-black text-[9px] tracking-widest">VALOR TOTAL GERAL</span>
-                     <span className="text-2xl font-black italic">R$ {(previewOrder.values.labor + previewOrder.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                  <div className="p-3.5 bg-[#1b2e85] text-white flex justify-between items-center">
+                     <span className="font-black text-[9px] tracking-widest uppercase">TOTAL GERAL</span>
+                     <span className="text-xl font-black italic">R$ {(previewOrder.values.labor + previewOrder.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   </div>
                </div>
             </div>
 
-            <div className="mt-auto grid grid-cols-2 gap-10 text-center pb-2 pt-6">
-                <div className="border-t-2 border-slate-200 pt-1.5"><p className="font-black text-[8px] uppercase tracking-widest text-slate-400">ASSINATURA DO CLIENTE</p></div>
-                <div className="border-t-2 border-slate-200 pt-1.5"><p className="font-black text-[8px] uppercase tracking-widest text-slate-400">{previewOrder.company.name || 'MD DIESEL'} - PRESTADOR</p></div>
+            <div className="mt-auto grid grid-cols-2 gap-10 text-center pb-2 pt-8">
+                <div className="border-t border-slate-400 pt-1.5"><p className="font-black text-[7px] uppercase tracking-widest text-slate-400">ASSINATURA RESPONSÁVEL CLIENTE</p></div>
+                <div className="border-t border-slate-400 pt-1.5"><p className="font-black text-[7px] uppercase tracking-widest text-slate-400">{previewOrder.company.name} - PRESTADOR</p></div>
             </div>
+            
+            <div className="absolute bottom-2 right-4 text-[6px] font-black text-slate-200 tracking-tighter uppercase italic">Gerado por MD Diesel OS Manager</div>
         </div>
       </div>
     );
@@ -351,7 +404,7 @@ const App: React.FC = () => {
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] flex items-center justify-center pointer-events-none">
             <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-200">
               <Loader2 size={40} className="text-[#1b2e85] animate-spin" />
-              <p className="font-black text-[10px] uppercase tracking-widest text-[#1b2e85]">Sincronizando...</p>
+              <p className="font-black text-[10px] uppercase tracking-widest text-[#1b2e85]">Processando...</p>
             </div>
           </div>
         )}
@@ -367,16 +420,19 @@ const App: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+              {/* DADOS DA EMPRESA - PERSISTIDOS */}
+              <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 relative">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <Building2 size={18} className="text-[#1b2e85]" />
-                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Dados da Empresa (Prestador)</h3>
+                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Dados da Empresa (Fixo)</h3>
                 </div>
                 <Input label="Razão Social" value={order.company.name} onChange={e => setOrder({...order, company: {...order.company, name: e.target.value}})} placeholder="Ex: MD DIESEL LTDA" />
                 <Input label="CNPJ" value={order.company.cnpj} onChange={e => setOrder({...order, company: {...order.company, cnpj: e.target.value}})} placeholder="00.000.000/0001-00" />
                 <Input label="WhatsApp/Contato" value={order.company.phone} onChange={e => setOrder({...order, company: {...order.company, phone: e.target.value}})} placeholder="(00) 00000-0000" />
+                <p className="text-[9px] text-slate-300 font-bold uppercase text-center mt-2">Esses dados serão salvos como padrão ao gravar a OS.</p>
               </section>
 
+              {/* DADOS DO CLIENTE */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <User size={18} className="text-[#1b2e85]" />
@@ -387,6 +443,7 @@ const App: React.FC = () => {
                 <Input label="WhatsApp" value={order.client.phone} onChange={e => setOrder({...order, client: {...order.client, phone: e.target.value}})} placeholder="(00) 00000-0000" />
               </section>
 
+              {/* DADOS DO VEÍCULO */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <Truck size={18} className="text-[#1b2e85]" />
@@ -399,35 +456,38 @@ const App: React.FC = () => {
                 <Input label="Marca/Modelo" value={order.vehicle.brand} onChange={e => setOrder({...order, vehicle: {...order.vehicle, brand: e.target.value}})} placeholder="Ex: Scania R450 / Volvo FH" />
               </section>
 
+              {/* FINANCEIRO E PAGAMENTO */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <DollarSign size={18} className="text-[#1b2e85]" />
-                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Financeiro</h3>
+                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Resumo Financeiro</h3>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <Input label="Mão de Obra Total (R$)" type="number" value={order.values.labor} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
+                  <Input label="Mão de Obra (R$)" type="number" value={order.values.labor} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
                   <Input label="Deslocamento (R$)" type="number" value={order.values.travel} onChange={e => setOrder({...order, values: {...order.values, travel: Number(e.target.value)}})} />
                 </div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Método de Pagamento</label>
                 <select 
                   value={order.paymentMethod}
                   onChange={e => setOrder({...order, paymentMethod: e.target.value as PaymentMethod})}
-                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-800 outline-none focus:border-[#1b2e85] text-xs cursor-pointer transition-all"
+                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3.5 font-black text-slate-800 outline-none focus:border-[#1b2e85] text-xs cursor-pointer transition-all shadow-inner"
                 >
                   {Object.values(PaymentMethod).map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
               </section>
 
+              {/* ITENS DE SERVIÇO */}
               <section className="md:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                   <div className="flex items-center gap-2">
                     <ClipboardList size={18} className="text-[#1b2e85]" />
-                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Itens de Serviço (Descrição e Valor)</h3>
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Detalhamento dos Serviços Efetuados</h3>
                   </div>
                   <button 
                     onClick={addServiceItem}
-                    className="flex items-center gap-1 bg-[#1b2e85] text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase hover:bg-sky-600 transition-colors shadow-lg"
+                    className="flex items-center gap-1 bg-[#1b2e85] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-sky-600 transition-colors shadow-lg active:scale-95"
                   >
-                    <Plus size={14} /> Adicionar Linha
+                    <Plus size={14} /> Adicionar Serviço
                   </button>
                 </div>
                 
@@ -436,15 +496,15 @@ const App: React.FC = () => {
                     <div key={index} className="flex gap-3 items-end group animate-in slide-in-from-right-2 duration-200">
                       <div className="flex-1">
                         <Input 
-                          label={index === 0 ? "Descrição do Serviço" : ""} 
+                          label={index === 0 ? "Descrição Detalhada" : ""} 
                           value={item.description} 
                           onChange={e => updateServiceItem(index, 'description', e.target.value)} 
-                          placeholder="Ex: Troca de filtros e óleo"
+                          placeholder="Ex: Regulagem de válvulas e bicos"
                         />
                       </div>
                       <div className="w-32">
                         <Input 
-                          label={index === 0 ? "Valor (R$)" : ""} 
+                          label={index === 0 ? "Valor Item (R$)" : ""} 
                           type="number" 
                           value={item.value} 
                           onChange={e => updateServiceItem(index, 'value', Number(e.target.value))} 
@@ -453,48 +513,44 @@ const App: React.FC = () => {
                       <button 
                         onClick={() => removeServiceItem(index)}
                         className="p-3 mb-0.5 text-slate-300 hover:text-red-500 transition-colors group-hover:opacity-100 opacity-0"
-                        title="Remover item"
+                        title="Remover linha"
                       >
                         <Trash size={18} />
                       </button>
                     </div>
                   ))}
-                  
-                  {(!order.serviceItems || order.serviceItems.length === 0) && (
-                    <div className="text-center py-8 text-slate-400 font-bold text-xs uppercase border-2 border-dashed border-slate-100 rounded-xl">
-                      Nenhum serviço adicionado. Clique em "Adicionar Linha".
-                    </div>
-                  )}
                 </div>
               </section>
 
-              <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl border-4 border-sky-400/20">
-                <span className="text-sky-300 text-[10px] font-black uppercase mb-2 tracking-[0.2em]">VALOR TOTAL GERAL</span>
-                <div className="text-4xl sm:text-5xl font-black text-white italic">
+              {/* TOTAL GERAL */}
+              <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl border-4 border-sky-400/20 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/5 to-transparent pointer-events-none"></div>
+                <span className="text-sky-300 text-[11px] font-black uppercase mb-2 tracking-[0.3em]">VALOR TOTAL DA ORDEM</span>
+                <div className="text-5xl sm:text-6xl font-black text-white italic drop-shadow-lg">
                   R$ {(order.values.labor + order.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </div>
               </section>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4 pt-6">
-              <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-lg shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-emerald-800">
-                <Save size={24} /> SALVAR ORDEM
+              <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-emerald-800 group">
+                <Save size={26} className="group-hover:scale-110 transition-transform"/> GRAVAR OS E PERFIL
               </button>
-              <button onClick={() => order.client.name ? setPreviewOrder(order) : alert("Preencha o nome do cliente.")} className="bg-sky-600 hover:bg-sky-500 text-white px-10 py-6 rounded-2xl font-black text-lg shadow-xl transition-all active:scale-95 border-b-4 border-sky-800">
-                GERAR PDF
+              <button onClick={() => order.client.name ? setPreviewOrder(order) : alert("Preencha ao menos o nome do cliente.")} className="bg-sky-600 hover:bg-sky-500 text-white px-10 py-6 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 border-b-4 border-sky-800 flex items-center justify-center gap-3">
+                <FileDown size={26} /> PREVIEW PDF
               </button>
             </div>
           </div>
         ) : (
           <div className="space-y-6 animate-in fade-in duration-500 pb-12">
             <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-               <h2 className="text-xl font-black text-slate-800 uppercase italic">Histórico</h2>
+               <h2 className="text-xl font-black text-slate-800 uppercase italic">Banco de Ordens</h2>
                <div className="relative w-full sm:w-80">
                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                  <input 
                    type="text" 
-                   placeholder="Pesquisar..." 
-                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs" 
+                   placeholder="Buscar por nome, placa ou número..." 
+                   className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs shadow-inner" 
                    value={searchTerm} 
                    onChange={e => setSearchTerm(e.target.value)} 
                  />
@@ -503,40 +559,50 @@ const App: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredOrders.map(item => (
-                <div key={item.id} className="bg-white rounded-3xl shadow-sm border border-slate-100 hover:shadow-xl transition-all overflow-hidden flex flex-col group">
-                  <div className="p-6 flex-1">
-                    <div className="flex justify-between items-start mb-4">
-                      <span className="bg-[#1b2e85] text-white px-3 py-1 rounded-lg text-[9px] font-black italic shadow-md">{item.id}</span>
-                      <span className="text-[9px] font-bold text-slate-300 uppercase">{new Date(item.date).toLocaleDateString('pt-BR')}</span>
+                <div key={item.id} className="bg-white rounded-[32px] shadow-sm border border-slate-100 hover:shadow-2xl transition-all overflow-hidden flex flex-col group border-b-4 border-b-slate-200 hover:border-b-[#1b2e85]">
+                  <div className="p-7 flex-1">
+                    <div className="flex justify-between items-start mb-5">
+                      <span className="bg-[#1b2e85] text-white px-4 py-1.5 rounded-xl text-[10px] font-black italic shadow-lg">{item.id}</span>
+                      <div className="text-right">
+                        <span className="text-[10px] font-black text-slate-300 uppercase block">{formatDisplayDate(item.date)}</span>
+                      </div>
                     </div>
-                    <h4 className="font-black text-slate-900 text-lg uppercase truncate mb-1">{item.client.name}</h4>
-                    <p className="text-[10px] font-black text-sky-600 uppercase tracking-widest mb-4">{item.vehicle.plate}</p>
-                    <div className="pt-4 border-t border-slate-50 text-2xl font-black text-slate-900">
-                      <span className="text-[10px] font-bold text-slate-300 mr-2 uppercase">Total</span>
+                    <h4 className="font-black text-slate-900 text-xl uppercase truncate mb-1">{item.client.name}</h4>
+                    <p className="text-[11px] font-black text-sky-600 uppercase tracking-widest mb-5 flex items-center gap-2">
+                      <Truck size={12} /> {item.vehicle.plate}
+                    </p>
+                    <div className="pt-5 border-t border-slate-50 text-3xl font-black text-[#1b2e85] italic">
+                      <span className="text-[10px] font-bold text-slate-300 mr-2 uppercase not-italic">Total</span>
                       R$ {(item.values.labor + item.values.travel).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="bg-slate-50 p-4 grid grid-cols-3 gap-2 border-t border-slate-100">
-                    <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo(0,0); }} className="bg-white p-3 rounded-xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm">
-                      <History size={18} />
+                  <div className="bg-slate-50 p-5 grid grid-cols-3 gap-3 border-t border-slate-100">
+                    <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo(0,0); }} className="bg-white p-4 rounded-2xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm active:scale-90" title="Editar">
+                      <History size={20} />
                     </button>
-                    <button onClick={() => setPreviewOrder(item)} className="bg-white p-3 rounded-xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm">
-                      <Download size={18} />
+                    <button onClick={() => setPreviewOrder(item)} className="bg-white p-4 rounded-2xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm active:scale-90" title="Exportar PDF">
+                      <Download size={20} />
                     </button>
-                    <button onClick={() => handleDelete(item.id)} className="bg-white p-3 rounded-xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm">
-                      <Trash2 size={18} />
+                    <button onClick={() => handleDelete(item.id)} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm active:scale-90" title="Excluir">
+                      <Trash2 size={20} />
                     </button>
                   </div>
                 </div>
               ))}
+              
+              {filteredOrders.length === 0 && (
+                <div className="col-span-full py-20 text-center bg-white rounded-3xl border-2 border-dashed border-slate-100">
+                  <p className="font-black text-slate-300 uppercase tracking-widest text-sm">Nenhuma ordem encontrada</p>
+                </div>
+              )}
             </div>
           </div>
         )}
       </main>
       
-      <footer className="py-10 bg-white border-t border-slate-200 mt-auto">
+      <footer className="py-12 bg-white border-t border-slate-200 mt-auto">
         <div className="max-w-5xl mx-auto px-6 text-center">
-          <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.5em] italic">MD DIESEL • SISTEMA GESTOR</p>
+          <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.6em] italic">MD DIESEL • SISTEMA GESTOR PROFISSIONAL</p>
         </div>
       </footer>
     </div>
