@@ -19,8 +19,8 @@ import {
   Trash
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
-import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types.ts';
-import Input from './components/Input.tsx';
+import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
+import Input from './components/Input';
 
 const SUPABASE_URL = 'https://zozuufcvskbmdsppexsy.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo';
@@ -37,7 +37,6 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
   
-  // Explicitly type companyProfile state to match ServiceOrder['company'] to resolve optional property errors
   const [companyProfile, setCompanyProfile] = useState<ServiceOrder['company']>({
     name: 'MD DIESEL',
     cnpj: '',
