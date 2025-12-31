@@ -1,21 +1,16 @@
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   User, 
   Truck, 
   ClipboardList, 
   DollarSign, 
   Save, 
-  PlusCircle, 
   History, 
   Trash2, 
   Search,
   Loader2,
   Download,
-  Settings,
-  Calendar,
-  CreditCard,
-  FileText,
   ArrowLeft,
   Printer,
   FileDown,
@@ -24,8 +19,8 @@ import {
   Trash
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
-import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
-import Input from './components/Input';
+import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types.ts';
+import Input from './components/Input.tsx';
 
 const SUPABASE_URL = 'https://zozuufcvskbmdsppexsy.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo';
@@ -42,8 +37,8 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
   
-  // Dados fixos da empresa persistidos
-  const [companyProfile, setCompanyProfile] = useState({
+  // Explicitly type companyProfile state to match ServiceOrder['company'] to resolve optional property errors
+  const [companyProfile, setCompanyProfile] = useState<ServiceOrder['company']>({
     name: 'MD DIESEL',
     cnpj: '',
     phone: '',
@@ -62,7 +57,6 @@ const App: React.FC = () => {
 
   const formatId = (num: number) => `OS-${String(num).padStart(4, '0')}`;
 
-  // Função auxiliar para pegar data local no formato YYYY-MM-DD
   const getLocalDateString = () => {
     const now = new Date();
     const year = now.getFullYear();
@@ -92,7 +86,6 @@ const App: React.FC = () => {
 
   useEffect(() => { fetchInitialData(); }, []);
 
-  // Sincroniza o perfil da empresa com a ordem atual se ela for nova
   useEffect(() => {
     if (activeTab === 'form' && !order.client.name && !order.vehicle.plate) {
       setOrder(prev => ({ ...prev, company: { ...companyProfile } }));
@@ -111,13 +104,11 @@ const App: React.FC = () => {
   const fetchInitialData = async () => {
     setLoading(true);
     try {
-      // Tenta carregar perfil da empresa do localStorage primeiro
       const localProfile = localStorage.getItem('md_diesel_profile');
       if (localProfile) {
         setCompanyProfile(JSON.parse(localProfile));
       }
 
-      // Tenta carregar do Supabase (settings)
       const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').single();
       if (profileData?.value) {
         setCompanyProfile(profileData.value);
@@ -155,12 +146,10 @@ const App: React.FC = () => {
     }
     setLoading(true);
     try {
-      // Salva os dados da empresa como perfil padrão
       const currentCompany = { ...order.company };
       setCompanyProfile(currentCompany);
       localStorage.setItem('md_diesel_profile', JSON.stringify(currentCompany));
       
-      // Tenta persistir perfil no Supabase de forma assíncrona (opcional)
       supabase.from('settings').upsert({ id: 'company_profile', value: currentCompany }).then();
 
       const orderToSave = { ...order };
@@ -254,7 +243,6 @@ const App: React.FC = () => {
     });
   }, [savedOrders, searchTerm]);
 
-  // Função para formatar data do YYYY-MM-DD para PT-BR sem erros de fuso
   const formatDisplayDate = (dateStr: string) => {
     if (!dateStr) return '---';
     const [year, month, day] = dateStr.split('-');
@@ -273,7 +261,6 @@ const App: React.FC = () => {
            </button>
         </div>
 
-        {/* Container fixo em 297mm para garantir apenas 1 página no PDF */}
         <div id="pdf-content-to-print" className="bg-white w-[210mm] h-[297mm] p-[10mm] text-slate-800 flex flex-col shadow-2xl relative overflow-hidden">
             <div className="border-b-[5px] border-[#1b2e85] pb-4 mb-4 flex justify-between items-end">
                <div>
@@ -324,7 +311,6 @@ const App: React.FC = () => {
                        </td>
                      </tr>
                    ))}
-                   {/* Linhas vazias adaptáveis para manter uma estética de formulário profissional */}
                    {Array.from({ length: Math.max(0, 15 - (previewOrder.serviceItems?.length || 0)) }).map((_, i) => (
                      <tr key={`empty-${i}`} className="border-b border-slate-50 last:border-0 h-6">
                        <td></td>
@@ -420,7 +406,6 @@ const App: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* DADOS DA EMPRESA - PERSISTIDOS */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 relative">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <Building2 size={18} className="text-[#1b2e85]" />
@@ -432,7 +417,6 @@ const App: React.FC = () => {
                 <p className="text-[9px] text-slate-300 font-bold uppercase text-center mt-2">Esses dados serão salvos como padrão ao gravar a OS.</p>
               </section>
 
-              {/* DADOS DO CLIENTE */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <User size={18} className="text-[#1b2e85]" />
@@ -443,7 +427,6 @@ const App: React.FC = () => {
                 <Input label="WhatsApp" value={order.client.phone} onChange={e => setOrder({...order, client: {...order.client, phone: e.target.value}})} placeholder="(00) 00000-0000" />
               </section>
 
-              {/* DADOS DO VEÍCULO */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <Truck size={18} className="text-[#1b2e85]" />
@@ -456,7 +439,6 @@ const App: React.FC = () => {
                 <Input label="Marca/Modelo" value={order.vehicle.brand} onChange={e => setOrder({...order, vehicle: {...order.vehicle, brand: e.target.value}})} placeholder="Ex: Scania R450 / Volvo FH" />
               </section>
 
-              {/* FINANCEIRO E PAGAMENTO */}
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <DollarSign size={18} className="text-[#1b2e85]" />
@@ -476,7 +458,6 @@ const App: React.FC = () => {
                 </select>
               </section>
 
-              {/* ITENS DE SERVIÇO */}
               <section className="md:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                   <div className="flex items-center gap-2">
@@ -512,7 +493,7 @@ const App: React.FC = () => {
                       </div>
                       <button 
                         onClick={() => removeServiceItem(index)}
-                        className="p-3 mb-0.5 text-slate-300 hover:text-red-500 transition-colors group-hover:opacity-100 opacity-0"
+                        className="p-3 mb-0.5 text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
                         title="Remover linha"
                       >
                         <Trash size={18} />
@@ -522,7 +503,6 @@ const App: React.FC = () => {
                 </div>
               </section>
 
-              {/* TOTAL GERAL */}
               <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl border-4 border-sky-400/20 relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/5 to-transparent pointer-events-none"></div>
                 <span className="text-sky-300 text-[11px] font-black uppercase mb-2 tracking-[0.3em]">VALOR TOTAL DA ORDEM</span>
