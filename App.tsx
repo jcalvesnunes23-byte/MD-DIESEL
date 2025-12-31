@@ -16,7 +16,12 @@ import {
   FileDown,
   Building2,
   Plus,
-  Trash
+  Trash,
+  Tag,
+  Briefcase,
+  Pencil,
+  Check,
+  X
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
@@ -31,13 +36,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const html2pdf = window.html2pdf;
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'form' | 'list'>('form');
+  const [activeTab, setActiveTab] = useState<'form' | 'list' | 'prices'>('form');
   const [savedOrders, setSavedOrders] = useState<ServiceOrder[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
   
-  // Dados da empresa agora inicializados com os valores fornecidos
+  const [priceCatalog, setPriceCatalog] = useState<Record<string, number>>({});
+  const [editingPriceKey, setEditingPriceKey] = useState<string | null>(null);
+  const [tempPriceValue, setTempPriceValue] = useState<number>(0);
+
   const [companyProfile, setCompanyProfile] = useState<ServiceOrder['company']>({
     name: 'MD DIESEL',
     cnpj: '57.833.594/0001-39',
@@ -107,17 +115,18 @@ const App: React.FC = () => {
       const localProfile = localStorage.getItem('md_diesel_profile');
       if (localProfile) {
         const parsed = JSON.parse(localProfile);
-        // Garantir que se o local for antigo, usamos os novos dados fixos se estiverem vazios
-        setCompanyProfile({
-          ...companyProfile,
-          ...parsed
-        });
+        setCompanyProfile({ ...companyProfile, ...parsed });
       }
 
       const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').single();
       if (profileData?.value) {
         setCompanyProfile(prev => ({ ...prev, ...profileData.value }));
         localStorage.setItem('md_diesel_profile', JSON.stringify(profileData.value));
+      }
+
+      const { data: catalogData } = await supabase.from('settings').select('value').eq('id', 'price_catalog').single();
+      if (catalogData?.value) {
+        setPriceCatalog(catalogData.value);
       }
 
       const { data: ordersData, error: ordersError } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
@@ -162,7 +171,7 @@ const App: React.FC = () => {
         id: order.id,
         client_name: order.client.name,
         vehicle_plate: order.vehicle.plate,
-        total_value: (order.values.labor + order.values.travel + (order.serviceItems?.reduce((acc, curr) => acc + curr.value, 0) || 0)),
+        total_value: calculateTotal(order),
         content: orderToSave
       });
       
@@ -219,9 +228,9 @@ const App: React.FC = () => {
     setOrder({ ...order, serviceItems: newItems });
   };
 
+  // NOVA LÓGICA: Soma apenas os valores das Informações Adicionais (Mão de Obra + Deslocamento)
   const calculateTotal = (targetOrder: ServiceOrder) => {
-    const itemsTotal = (targetOrder.serviceItems || []).reduce((acc, curr) => acc + curr.value, 0);
-    return itemsTotal + targetOrder.values.labor + targetOrder.values.travel;
+    return targetOrder.values.labor + targetOrder.values.travel;
   };
 
   const downloadPDF = async (targetOrder: ServiceOrder) => {
@@ -240,18 +249,55 @@ const App: React.FC = () => {
     } finally { setLoading(false); }
   };
 
+  const handleUpdatePriceInCatalog = async (key: string) => {
+    const newCatalog = { ...priceCatalog, [key]: tempPriceValue };
+    setPriceCatalog(newCatalog);
+    setEditingPriceKey(null);
+    setLoading(true);
+    try {
+      await supabase.from('settings').upsert({ id: 'price_catalog', value: newCatalog });
+    } catch (e) {
+      console.error("Erro ao salvar catálogo", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const filteredOrders = useMemo(() => {
-    const filtered = savedOrders.filter(o => 
+    return savedOrders.filter(o => 
       o.client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       o.vehicle.plate.toLowerCase().includes(searchTerm.toLowerCase()) ||
       o.id.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-    return filtered.sort((a, b) => {
+    ).sort((a, b) => {
       const numA = parseInt(a.id.replace(/\D/g, '') || "0", 10);
       const numB = parseInt(b.id.replace(/\D/g, '') || "0", 10);
       return numB - numA;
     });
   }, [savedOrders, searchTerm]);
+
+  const priceTableData = useMemo(() => {
+    const servicesMap = new Map<string, { description: string; lastValue: number; count: number }>();
+    [...savedOrders].reverse().forEach(order => {
+      (order.serviceItems || []).forEach(item => {
+        if (item.description.trim()) {
+          const rawKey = item.description.trim().toUpperCase();
+          const existing = servicesMap.get(rawKey);
+          const finalValue = priceCatalog[rawKey] !== undefined ? priceCatalog[rawKey] : item.value;
+          servicesMap.set(rawKey, {
+            description: item.description.trim(),
+            lastValue: finalValue,
+            count: (existing?.count || 0) + 1
+          });
+        }
+      });
+    });
+
+    return Array.from(servicesMap.values())
+      .filter(item => 
+        item.description.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+      .sort((a, b) => a.description.localeCompare(b.description));
+  }, [savedOrders, searchTerm, priceCatalog]);
 
   const formatDisplayDate = (dateStr: string) => {
     if (!dateStr) return '---';
@@ -338,8 +384,8 @@ const App: React.FC = () => {
                </div>
                <div className="border-2 border-[#1b2e85] rounded-xl overflow-hidden shadow-sm">
                   <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
-                     <span className="text-slate-400 uppercase">SUBTOTAL ITENS</span>
-                     <span className="text-[#1b2e85]">R$ {(previewOrder.serviceItems?.reduce((acc, curr) => acc + curr.value, 0) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                     <span className="text-slate-400 uppercase">SUBTOTAL ITENS (REF.)</span>
+                     <span className="text-slate-400">R$ {(previewOrder.serviceItems?.reduce((acc, curr) => acc + curr.value, 0) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   </div>
                   <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
                      <span className="text-slate-400 uppercase">MÃO DE OBRA ADIC.</span>
@@ -369,9 +415,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col text-slate-900 bg-[#f1f5f9] overflow-x-hidden">
-      <header className="fixed top-0 left-0 right-0 h-[120px] lg:h-[90px] bg-[#1b2e85] text-white shadow-2xl z-[100] border-b-4 border-sky-500 flex items-center">
-        <div className="absolute top-0 left-0 w-full h-full bg-black/10 pointer-events-none"></div>
-        
+      <header className="fixed top-0 left-0 right-0 h-[135px] lg:h-[90px] bg-[#1b2e85] text-white shadow-2xl z-[100] border-b-4 border-sky-500 flex items-center">
         <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex flex-col lg:flex-row justify-between items-center relative z-10 gap-3 lg:gap-0">
           <div className="text-center lg:text-left">
              <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tighter leading-none text-glow italic">
@@ -385,21 +429,27 @@ const App: React.FC = () => {
           <nav className="flex bg-white/10 p-1 rounded-xl backdrop-blur-md border border-white/20">
             <button 
               onClick={handleNewOrder} 
-              className={`px-6 sm:px-8 py-2 rounded-lg text-xs font-black transition-all ${activeTab === 'form' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
+              className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'form' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
             >
               NOVA OS
             </button>
             <button 
-              onClick={() => setActiveTab('list')} 
-              className={`px-6 sm:px-8 py-2 rounded-lg text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
+              onClick={() => { setActiveTab('list'); setSearchTerm(''); }} 
+              className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
             >
               HISTÓRICO
+            </button>
+            <button 
+              onClick={() => { setActiveTab('prices'); setSearchTerm(''); }} 
+              className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'prices' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
+            >
+              TABELA
             </button>
           </nav>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 mt-[140px] lg:mt-[110px]">
+      <main className="max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 mt-[150px] lg:mt-[110px]">
         {loading && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] flex items-center justify-center pointer-events-none">
             <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-200">
@@ -409,7 +459,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'form' ? (
+        {activeTab === 'form' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500 pb-12">
             <div className="flex justify-between items-center bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                <h2 className="text-xl font-black text-slate-800 uppercase italic">Registro de OS</h2>
@@ -428,7 +478,6 @@ const App: React.FC = () => {
                 <Input label="Razão Social" value={order.company.name} onChange={e => setOrder({...order, company: {...order.company, name: e.target.value}})} placeholder="Ex: MD DIESEL LTDA" />
                 <Input label="CNPJ" value={order.company.cnpj} onChange={e => setOrder({...order, company: {...order.company, cnpj: e.target.value}})} placeholder="00.000.000/0001-00" />
                 <Input label="WhatsApp/Contato" value={order.company.phone} onChange={e => setOrder({...order, company: {...order.company, phone: e.target.value}})} placeholder="(00) 00000-0000" />
-                <p className="text-[9px] text-slate-400 font-bold uppercase text-center mt-2 bg-slate-50 py-1.5 rounded-lg border border-slate-100 italic">Estes dados já estão configurados como padrão.</p>
               </section>
 
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -456,7 +505,7 @@ const App: React.FC = () => {
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <DollarSign size={18} className="text-[#1b2e85]" />
-                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Informações Adicionais</h3>
+                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Informações Adicionais (Valores do Total)</h3>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <Input label="Mão de Obra Adic. (R$)" type="number" value={order.values.labor} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
@@ -476,7 +525,7 @@ const App: React.FC = () => {
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                   <div className="flex items-center gap-2">
                     <ClipboardList size={18} className="text-[#1b2e85]" />
-                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Detalhamento dos Serviços Efetuados</h3>
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Detalhamento dos Serviços (Apenas Registro)</h3>
                   </div>
                   <button 
                     onClick={addServiceItem}
@@ -499,7 +548,7 @@ const App: React.FC = () => {
                       </div>
                       <div className="w-32">
                         <Input 
-                          label={index === 0 ? "Valor (R$)" : ""} 
+                          label={index === 0 ? "Valor Ref. (R$)" : ""} 
                           type="number" 
                           value={item.value} 
                           onChange={e => updateServiceItem(index, 'value', Number(e.target.value))} 
@@ -519,7 +568,7 @@ const App: React.FC = () => {
 
               <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl border-4 border-sky-400/20 relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/5 to-transparent pointer-events-none"></div>
-                <span className="text-sky-300 text-[11px] font-black uppercase mb-2 tracking-[0.3em]">VALOR TOTAL DA ORDEM</span>
+                <span className="text-sky-300 text-[11px] font-black uppercase mb-2 tracking-[0.3em]">VALOR TOTAL (Mão de Obra + Deslocamento)</span>
                 <div className="text-5xl sm:text-6xl font-black text-white italic drop-shadow-lg">
                   R$ {calculateTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </div>
@@ -535,7 +584,9 @@ const App: React.FC = () => {
               </button>
             </div>
           </div>
-        ) : (
+        )}
+
+        {activeTab === 'list' && (
           <div className="space-y-6 animate-in fade-in duration-500 pb-12">
             <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                <h2 className="text-xl font-black text-slate-800 uppercase italic">Banco de Ordens</h2>
@@ -583,12 +634,121 @@ const App: React.FC = () => {
                   </div>
                 </div>
               ))}
-              
-              {filteredOrders.length === 0 && (
-                <div className="col-span-full py-20 text-center bg-white rounded-3xl border-2 border-dashed border-slate-100">
-                  <p className="font-black text-slate-300 uppercase tracking-widest text-sm">Nenhuma ordem encontrada</p>
-                </div>
-              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'prices' && (
+          <div className="space-y-6 animate-in fade-in duration-500 pb-12">
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+               <div className="flex items-center gap-3">
+                 <Tag className="text-[#1b2e85]" size={24} />
+                 <h2 className="text-xl font-black text-slate-800 uppercase italic">Tabela de Preços (Catálogo)</h2>
+               </div>
+               <div className="relative w-full sm:w-80">
+                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                 <input 
+                   type="text" 
+                   placeholder="Procurar serviço/item..." 
+                   className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs shadow-inner" 
+                   value={searchTerm} 
+                   onChange={e => setSearchTerm(e.target.value)} 
+                 />
+               </div>
+            </div>
+
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+               <table className="w-full text-left">
+                  <thead>
+                    <tr className="bg-slate-900 text-white">
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Serviço / Peça</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center">Ocorrências</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Preço Sugerido (R$)</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center w-24">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {priceTableData.map((item, idx) => {
+                      const key = item.description.toUpperCase();
+                      const isEditing = editingPriceKey === key;
+                      
+                      return (
+                        <tr key={idx} className={`border-b border-slate-50 transition-colors group ${isEditing ? 'bg-sky-50/50' : 'hover:bg-slate-50/50'}`}>
+                          <td className="px-6 py-4">
+                             <div className="flex items-center gap-3">
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${isEditing ? 'bg-[#1b2e85] text-white' : 'bg-sky-50 text-[#1b2e85] group-hover:bg-[#1b2e85] group-hover:text-white'}`}>
+                                  <Briefcase size={14} />
+                                </div>
+                                <span className="font-black text-slate-700 uppercase text-xs">{item.description}</span>
+                             </div>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                             <span className="bg-slate-100 text-slate-400 px-3 py-1 rounded-full text-[9px] font-black">{item.count}x registrado</span>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                             {isEditing ? (
+                               <div className="flex justify-end items-center animate-in zoom-in-95 duration-200">
+                                 <span className="mr-2 font-black text-sky-600 text-sm italic">R$</span>
+                                 <input 
+                                   autoFocus
+                                   type="number" 
+                                   className="w-32 bg-white border-2 border-sky-400 rounded-lg px-3 py-1.5 font-black text-slate-800 text-right text-sm outline-none shadow-sm"
+                                   value={tempPriceValue}
+                                   onChange={e => setTempPriceValue(Number(e.target.value))}
+                                   onKeyDown={e => e.key === 'Enter' && handleUpdatePriceInCatalog(key)}
+                                 />
+                               </div>
+                             ) : (
+                               <span className="text-[#1b2e85] font-black text-base italic">R$ {item.lastValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                             )}
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                             <div className="flex justify-center gap-2">
+                               {isEditing ? (
+                                 <>
+                                   <button 
+                                     onClick={() => handleUpdatePriceInCatalog(key)}
+                                     className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-400 transition-all shadow-md active:scale-90"
+                                     title="Salvar Novo Preço"
+                                   >
+                                     <Check size={16} />
+                                   </button>
+                                   <button 
+                                     onClick={() => setEditingPriceKey(null)}
+                                     className="p-2 bg-slate-300 text-slate-600 rounded-lg hover:bg-slate-200 transition-all shadow-md active:scale-90"
+                                     title="Cancelar"
+                                   >
+                                     <X size={16} />
+                                   </button>
+                                 </>
+                               ) : (
+                                 <button 
+                                   onClick={() => {
+                                     setEditingPriceKey(key);
+                                     setTempPriceValue(item.lastValue);
+                                   }}
+                                   className="p-2 bg-white border border-slate-200 text-slate-400 rounded-lg hover:text-[#1b2e85] hover:border-[#1b2e85] transition-all shadow-sm active:scale-90 opacity-0 group-hover:opacity-100"
+                                   title="Editar Preço Sugerido"
+                                 >
+                                   <Pencil size={16} />
+                                 </button>
+                               )}
+                             </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+               </table>
+            </div>
+            
+            <div className="bg-sky-50 border border-sky-100 p-6 rounded-2xl flex items-center gap-4">
+               <div className="p-3 bg-white rounded-xl text-sky-600 shadow-sm">
+                  <Pencil size={20} />
+               </div>
+               <p className="text-[10px] font-bold text-sky-800 uppercase leading-relaxed italic">
+                 Dica: O "Valor Ref." dos itens de serviço servem para sua base de preços, mas o Total da OS agora soma apenas Mão de Obra e Deslocamento.
+               </p>
             </div>
           </div>
         )}
