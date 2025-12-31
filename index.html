@@ -12,18 +12,18 @@
         body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
 
         .text-glow {
-            text-shadow: 0 0 15px rgba(56, 189, 248, 0.9), 0 0 30px rgba(56, 189, 248, 0.6);
-            animation: pulse-glow 3s infinite alternate;
+            text-shadow: 0 0 10px rgba(56, 189, 248, 0.8), 0 0 20px rgba(56, 189, 248, 0.4);
+            animation: pulse-glow 2s infinite alternate;
         }
 
         @keyframes pulse-glow {
             from {
-                text-shadow: 0 0 10px rgba(56, 189, 248, 0.8), 0 0 20px rgba(56, 189, 248, 0.4);
-                transform: scale(1);
+                text-shadow: 0 0 8px rgba(56, 189, 248, 0.6), 0 0 15px rgba(56, 189, 248, 0.3);
+                opacity: 0.9;
             }
             to {
-                text-shadow: 0 0 25px rgba(56, 189, 248, 1), 0 0 50px rgba(56, 189, 248, 0.7);
-                transform: scale(1.02);
+                text-shadow: 0 0 15px rgba(56, 189, 248, 1), 0 0 30px rgba(56, 189, 248, 0.6);
+                opacity: 1;
             }
         }
 
