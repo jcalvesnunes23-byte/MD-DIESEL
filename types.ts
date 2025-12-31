@@ -12,6 +12,11 @@ export enum PaymentMethod {
   TRANSFER = 'Transferência'
 }
 
+export interface ServiceItem {
+  description: string;
+  value: number;
+}
+
 export interface ServiceOrder {
   id: string;
   date: string;
@@ -33,7 +38,8 @@ export interface ServiceOrder {
     plate: string;
     mileage: string;
   };
-  serviceDescription: string;
+  serviceDescription: string; // Mantido por compatibilidade, mas usaremos serviceItems
+  serviceItems?: ServiceItem[];
   values: {
     labor: number;
     travel: number;
