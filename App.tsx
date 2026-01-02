@@ -23,8 +23,9 @@ import { createClient } from '@supabase/supabase-js';
 import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
 import Input from './components/Input';
 
-const SUPABASE_URL = 'https://zozuufcvskbmdsppexsy.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo';
+// Fallbacks para garantir o funcionamento caso as env vars do Vercel não estejam presentes no preview
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zozuufcvskbmdsppexsy.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -95,7 +96,13 @@ const App: React.FC = () => {
     }
   }, [loading]);
 
-  useEffect(() => { fetchInitialData(); }, []);
+  useEffect(() => { 
+    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+      fetchInitialData(); 
+    } else {
+      console.error("Configurações do Supabase ausentes. Verifique as variáveis de ambiente.");
+    }
+  }, []);
 
   const fetchInitialData = async () => {
     setLoading(true);
