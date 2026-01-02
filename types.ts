@@ -31,6 +31,10 @@ export interface ServiceOrder {
     idNumber: string;
     phone: string;
   };
+  mechanic: {
+    name: string;
+    idNumber: string;
+  };
   vehicle: {
     type: VehicleType;
     brand: string;
@@ -38,7 +42,7 @@ export interface ServiceOrder {
     plate: string;
     mileage: string;
   };
-  serviceDescription: string; // Mantido por compatibilidade, mas usaremos serviceItems
+  serviceDescription: string;
   serviceItems?: ServiceItem[];
   values: {
     labor: number;

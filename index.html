@@ -18,6 +18,23 @@
             from { text-shadow: 0 0 8px rgba(56, 189, 248, 0.6), 0 0 15px rgba(56, 189, 248, 0.3); opacity: 0.9; }
             to { text-shadow: 0 0 15px rgba(56, 189, 248, 1), 0 0 30px rgba(56, 189, 248, 0.6); opacity: 1; }
         }
+
+        /* Animações de Splash */
+        @keyframes splash-in {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes splash-out {
+            from { opacity: 1; transform: scale(1); }
+            to { opacity: 0; transform: scale(1.1); filter: blur(10px); }
+        }
+        .animate-splash-in {
+            animation: splash-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .animate-splash-out {
+            animation: splash-out 0.5s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+        }
+
         @media print {
             body { background: white !important; margin: 0 !important; padding: 0 !important; }
             #root { display: none !important; }
@@ -36,7 +53,8 @@
     "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
     "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.89.0",
     "vite": "https://esm.sh/vite@^7.3.0",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "@google/genai": "https://esm.sh/@google/genai@^1.34.0"
   }
 }
 </script>

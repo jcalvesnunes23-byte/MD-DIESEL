@@ -14,14 +14,10 @@ import {
   ArrowLeft,
   Printer,
   FileDown,
-  Building2,
   Plus,
   Trash,
-  Tag,
-  Briefcase,
-  Pencil,
-  Check,
-  X
+  PlusCircle,
+  ShieldCheck
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
@@ -42,9 +38,13 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
   
+  const [showSplash, setShowSplash] = useState(false);
+  const [isSplashClosing, setIsSplashClosing] = useState(false);
+
   const [priceCatalog, setPriceCatalog] = useState<Record<string, number>>({});
-  const [editingPriceKey, setEditingPriceKey] = useState<string | null>(null);
-  const [tempPriceValue, setTempPriceValue] = useState<number>(0);
+  
+  const [newItemDesc, setNewItemDesc] = useState('');
+  const [newItemValue, setNewItemValue] = useState<number>(0);
 
   const [companyProfile, setCompanyProfile] = useState<ServiceOrder['company']>({
     name: 'MD DIESEL',
@@ -53,33 +53,171 @@ const App: React.FC = () => {
     logoUrl: 'https://zozuufcvskbmdsppexsy.supabase.co/storage/v1/object/public/assets/logo_md_diesel.png'
   });
 
+  const formatCurrency = (val: number) => {
+    return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val || 0);
+  };
+
+  /**
+   * Extrator de erro ultra-robusto para evitar [object Object]
+   */
+  const getErrorMessage = (err: any): string => {
+    if (!err) return "Erro desconhecido";
+    if (typeof err === 'string') return err;
+    
+    if (err.message && typeof err.message === 'string') {
+      let details = "";
+      if (err.details) details = ` - ${err.details}`;
+      if (err.hint) details += ` (Dica: ${err.hint})`;
+      return `${err.message}${details}`;
+    }
+
+    if (err.error) return getErrorMessage(err.error);
+
+    try {
+      const result = JSON.stringify(err);
+      return result === '{}' ? String(err) : result;
+    } catch {
+      return String(err);
+    }
+  };
+
+  useEffect(() => {
+    if (loading) {
+      setShowSplash(true);
+      setIsSplashClosing(false);
+    } else if (showSplash) {
+      setIsSplashClosing(true);
+      const timer = setTimeout(() => {
+        setShowSplash(false);
+        setIsSplashClosing(false);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [loading]);
+
+  useEffect(() => { fetchInitialData(); }, []);
+
+  const fetchInitialData = async () => {
+    setLoading(true);
+    try {
+      const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').maybeSingle();
+      if (profileData?.value) setCompanyProfile(prev => ({ ...prev, ...(profileData.value as any) }));
+
+      try {
+        const { data: catalogData } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
+        if (catalogData?.value) {
+          const cat = catalogData.value as Record<string, number>;
+          setPriceCatalog(cat || {});
+          localStorage.setItem('md_diesel_catalog', JSON.stringify(cat || {}));
+        } else {
+          const localCat = localStorage.getItem('md_diesel_catalog');
+          if (localCat) setPriceCatalog(JSON.parse(localCat) || {});
+        }
+      } catch (e) {
+        const localCat = localStorage.getItem('md_diesel_catalog');
+        if (localCat) setPriceCatalog(JSON.parse(localCat) || {});
+      }
+
+      const { data: ordersData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+      if (ordersData) {
+        setSavedOrders(ordersData.map(item => item.content as ServiceOrder));
+      }
+    } catch (err) {
+      console.error("Erro no carregamento:", err);
+    } finally { setLoading(false); }
+  };
+
+  const handleAddItemToCatalog = async () => {
+    const desc = newItemDesc.trim().toUpperCase();
+    if (!desc) {
+      alert("Informe a descrição do serviço.");
+      return;
+    }
+    
+    setLoading(true);
+    const updatedCatalog = { ...priceCatalog, [desc]: newItemValue };
+
+    try {
+      setPriceCatalog(updatedCatalog);
+      localStorage.setItem('md_diesel_catalog', JSON.stringify(updatedCatalog));
+      
+      const { error } = await supabase.from('settings').upsert(
+        [{ id: 'price_catalog', value: updatedCatalog }],
+        { onConflict: 'id' }
+      );
+      
+      if (error) throw error;
+      
+      setNewItemDesc('');
+      setNewItemValue(0);
+      alert("Item cadastrado!");
+    } catch (err) {
+      alert("Erro ao sincronizar catálogo: " + getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemoveFromCatalog = async (keyToRemove: string) => {
+    if (!window.confirm(`Deseja excluir permanentemente o item "${keyToRemove}"?`)) return;
+    
+    setLoading(true);
+    
+    const nextCatalog = Object.keys(priceCatalog)
+      .filter(key => key !== keyToRemove)
+      .reduce((acc, key) => {
+        acc[key] = priceCatalog[key];
+        return acc;
+      }, {} as Record<string, number>);
+
+    try {
+      setPriceCatalog(nextCatalog);
+      localStorage.setItem('md_diesel_catalog', JSON.stringify(nextCatalog));
+      
+      const { error } = await supabase.from('settings').upsert(
+        [{ id: 'price_catalog', value: nextCatalog }],
+        { onConflict: 'id' }
+      );
+      
+      if (error) throw error;
+      
+    } catch (err) {
+      console.error("Erro de sincronização:", err);
+      alert("Erro ao sincronizar exclusão com o servidor: " + getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Calcula o total considerando apenas Mão de Obra e Deslocamento.
+   * Os itens da descrição técnica são apenas informativos.
+   */
+  const calculateTotal = (targetOrder: ServiceOrder): number => {
+    if (!targetOrder) return 0;
+    const labor = targetOrder.values?.labor || 0;
+    const travel = targetOrder.values?.travel || 0;
+    return labor + travel;
+  };
+
   const getNextNumericId = (orders: ServiceOrder[]) => {
     if (!orders || orders.length === 0) return 1;
     const numericIds = orders.map(o => {
-      const digits = o.id.replace(/\D/g, '');
-      return digits ? parseInt(digits, 10) : 0;
+      const digits = o?.id?.replace(/\D/g, '') || '0';
+      return parseInt(digits, 10);
     });
-    const maxId = Math.max(...numericIds, 0);
-    return maxId + 1;
+    return Math.max(...numericIds, 0) + 1;
   };
 
   const formatId = (num: number) => `OS-${String(num).padStart(4, '0')}`;
 
-  const getLocalDateString = () => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
   const createInitialOrder = (ordersList: ServiceOrder[], currentCompany: any): ServiceOrder => {
-    const nextNum = getNextNumericId(ordersList);
     return {
-      id: formatId(nextNum),
-      date: getLocalDateString(),
+      id: formatId(getNextNumericId(ordersList)),
+      date: new Date().toISOString().split('T')[0],
       company: { ...currentCompany },
       client: { name: '', idNumber: '', phone: '' },
+      mechanic: { name: 'MD Diesel', idNumber: '57833594000139' },
       vehicle: { type: VehicleType.TRUCK, brand: '', model: '', plate: '', mileage: '' },
       serviceDescription: '',
       serviceItems: [{ description: '', value: 0 }],
@@ -92,145 +230,27 @@ const App: React.FC = () => {
 
   const [order, setOrder] = useState<ServiceOrder>(() => createInitialOrder([], companyProfile));
 
-  useEffect(() => { fetchInitialData(); }, []);
-
-  useEffect(() => {
-    if (activeTab === 'form' && !order.client.name && !order.vehicle.plate) {
-      setOrder(prev => ({ ...prev, company: { ...companyProfile } }));
-    }
-  }, [companyProfile, activeTab]);
-
-  useEffect(() => {
-    if (activeTab === 'form' && !order.client.name && !order.vehicle.plate) {
-      const nextId = formatId(getNextNumericId(savedOrders));
-      if (order.id !== nextId) {
-        setOrder(prev => ({ ...prev, id: nextId }));
-      }
-    }
-  }, [savedOrders, activeTab]);
-
-  const fetchInitialData = async () => {
-    setLoading(true);
-    try {
-      const localProfile = localStorage.getItem('md_diesel_profile');
-      if (localProfile) {
-        const parsed = JSON.parse(localProfile);
-        setCompanyProfile({ ...companyProfile, ...parsed });
-      }
-
-      const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').single();
-      if (profileData?.value) {
-        setCompanyProfile(prev => ({ ...prev, ...profileData.value }));
-        localStorage.setItem('md_diesel_profile', JSON.stringify(profileData.value));
-      }
-
-      const { data: catalogData } = await supabase.from('settings').select('value').eq('id', 'price_catalog').single();
-      if (catalogData?.value) {
-        setPriceCatalog(catalogData.value);
-      }
-
-      const { data: ordersData, error: ordersError } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-      if (ordersError) throw ordersError;
-      if (ordersData) {
-        const mappedOrders = ordersData.map(item => {
-          const content = item.content as ServiceOrder;
-          if (!content.serviceItems) {
-            content.serviceItems = [{ description: content.serviceDescription || 'Serviço Geral', value: content.values.labor }];
-          }
-          return content;
-        });
-        setSavedOrders(mappedOrders);
-      }
-    } catch (err) {
-      const localData = localStorage.getItem('md_diesel_orders');
-      if (localData) setSavedOrders(JSON.parse(localData));
-    } finally { setLoading(false); }
-  };
-
-  const handleNewOrder = () => {
-    setOrder(createInitialOrder(savedOrders, companyProfile));
-    setActiveTab('form');
-    window.scrollTo(0, 0);
-  };
-
   const handleSave = async () => {
     if (!order.client.name || !order.vehicle.plate) {
-      alert("Por favor, preencha o nome do cliente e a placa.");
+      alert("Preencha cliente e placa.");
       return;
     }
     setLoading(true);
     try {
-      const currentCompany = { ...order.company };
-      setCompanyProfile(currentCompany);
-      localStorage.setItem('md_diesel_profile', JSON.stringify(currentCompany));
-      
-      supabase.from('settings').upsert({ id: 'company_profile', value: currentCompany }).then();
-
-      const orderToSave = { ...order };
-      await supabase.from('orders').upsert({
+      const { error } = await supabase.from('orders').upsert({
         id: order.id,
         client_name: order.client.name,
         vehicle_plate: order.vehicle.plate,
         total_value: calculateTotal(order),
-        content: orderToSave
+        content: order
       });
-      
-      const exists = savedOrders.find(o => o.id === order.id);
-      const newOrders = exists 
-        ? savedOrders.map(o => o.id === order.id ? orderToSave : o) 
-        : [orderToSave, ...savedOrders];
-      
-      setSavedOrders(newOrders);
-      localStorage.setItem('md_diesel_orders', JSON.stringify(newOrders));
-      alert("Ordem de Serviço salva com sucesso!");
+      if (error) throw error;
+      await fetchInitialData();
+      alert("OS Salva!");
       setActiveTab('list');
     } catch(err) {
-      alert("Erro ao salvar no servidor. Dados mantidos localmente.");
+      alert("Erro ao gravar: " + getErrorMessage(err));
     } finally { setLoading(false); }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!id) return;
-    const msg = `🛑 EXCLUIR OS ${id}?\n\nEsta ordem será apagada permanentemente do sistema. Confirma?`;
-    if (!window.confirm(msg)) return;
-
-    setLoading(true);
-    try {
-      const { error } = await supabase.from('orders').delete().match({ id: id });
-      if (error) throw error;
-      setSavedOrders(prev => {
-        const filtered = prev.filter(o => o.id !== id);
-        localStorage.setItem('md_diesel_orders', JSON.stringify(filtered));
-        return filtered;
-      });
-      alert(`A OS ${id} foi excluída com sucesso.`);
-    } catch (err) {
-      alert("Falha na exclusão. Verifique sua conexão.");
-    } finally { setLoading(false); }
-  };
-
-  const addServiceItem = () => {
-    setOrder({
-      ...order,
-      serviceItems: [...(order.serviceItems || []), { description: '', value: 0 }]
-    });
-  };
-
-  const removeServiceItem = (index: number) => {
-    const newItems = [...(order.serviceItems || [])];
-    newItems.splice(index, 1);
-    setOrder({ ...order, serviceItems: newItems });
-  };
-
-  const updateServiceItem = (index: number, field: keyof ServiceItem, value: string | number) => {
-    const newItems = [...(order.serviceItems || [])];
-    newItems[index] = { ...newItems[index], [field]: value };
-    setOrder({ ...order, serviceItems: newItems });
-  };
-
-  // NOVA LÓGICA: Soma apenas os valores das Informações Adicionais (Mão de Obra + Deslocamento)
-  const calculateTotal = (targetOrder: ServiceOrder) => {
-    return targetOrder.values.labor + targetOrder.values.travel;
   };
 
   const downloadPDF = async (targetOrder: ServiceOrder) => {
@@ -240,222 +260,44 @@ const App: React.FC = () => {
     try {
       const opt = {
         margin: 0,
-        filename: `OS_${targetOrder.id}_MD_DIESEL.pdf`,
+        filename: `OS_${targetOrder.id}.pdf`,
         image: { type: 'jpeg', quality: 1 },
-        html2canvas: { scale: 3, useCORS: true, logging: false },
+        html2canvas: { scale: 3, useCORS: true },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
       };
       await html2pdf().set(opt).from(element).save();
     } finally { setLoading(false); }
   };
 
-  const handleUpdatePriceInCatalog = async (key: string) => {
-    const newCatalog = { ...priceCatalog, [key]: tempPriceValue };
-    setPriceCatalog(newCatalog);
-    setEditingPriceKey(null);
-    setLoading(true);
-    try {
-      await supabase.from('settings').upsert({ id: 'price_catalog', value: newCatalog });
-    } catch (e) {
-      console.error("Erro ao salvar catálogo", e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const filteredOrders = useMemo(() => {
-    return savedOrders.filter(o => 
-      o.client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      o.vehicle.plate.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      o.id.toLowerCase().includes(searchTerm.toLowerCase())
-    ).sort((a, b) => {
-      const numA = parseInt(a.id.replace(/\D/g, '') || "0", 10);
-      const numB = parseInt(b.id.replace(/\D/g, '') || "0", 10);
-      return numB - numA;
+    return savedOrders.filter(o => {
+      const search = searchTerm.toLowerCase();
+      return (o?.client?.name?.toLowerCase() || '').includes(search) || 
+             (o?.vehicle?.plate?.toLowerCase() || '').includes(search);
     });
   }, [savedOrders, searchTerm]);
-
-  const priceTableData = useMemo(() => {
-    const servicesMap = new Map<string, { description: string; lastValue: number; count: number }>();
-    [...savedOrders].reverse().forEach(order => {
-      (order.serviceItems || []).forEach(item => {
-        if (item.description.trim()) {
-          const rawKey = item.description.trim().toUpperCase();
-          const existing = servicesMap.get(rawKey);
-          const finalValue = priceCatalog[rawKey] !== undefined ? priceCatalog[rawKey] : item.value;
-          servicesMap.set(rawKey, {
-            description: item.description.trim(),
-            lastValue: finalValue,
-            count: (existing?.count || 0) + 1
-          });
-        }
-      });
-    });
-
-    return Array.from(servicesMap.values())
-      .filter(item => 
-        item.description.toLowerCase().includes(searchTerm.toLowerCase())
-      )
-      .sort((a, b) => a.description.localeCompare(b.description));
-  }, [savedOrders, searchTerm, priceCatalog]);
-
-  const formatDisplayDate = (dateStr: string) => {
-    if (!dateStr) return '---';
-    const [year, month, day] = dateStr.split('-');
-    return `${day}/${month}/${year}`;
-  };
-
-  if (previewOrder) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center p-4 no-print animate-in zoom-in-95 duration-300">
-        <div className="max-w-[210mm] w-full flex justify-between items-center mb-6">
-           <button onClick={() => setPreviewOrder(null)} className="flex items-center gap-2 text-white/50 hover:text-white font-black text-xs uppercase transition-all">
-             <ArrowLeft size={18} /> VOLTAR AO EDITOR
-           </button>
-           <button onClick={() => downloadPDF(previewOrder)} className="bg-sky-500 hover:bg-sky-400 text-white px-8 py-3 rounded-xl font-black shadow-xl flex items-center gap-3 text-sm uppercase">
-             <Printer size={20} /> IMPRIMIR / SALVAR PDF
-           </button>
-        </div>
-
-        <div id="pdf-content-to-print" className="bg-white w-[210mm] h-[297mm] p-[10mm] text-slate-800 flex flex-col shadow-2xl relative overflow-hidden">
-            <div className="border-b-[5px] border-[#1b2e85] pb-4 mb-4 flex justify-between items-end">
-               <div>
-                  <h2 className="text-4xl font-black text-[#1b2e85] tracking-tighter mb-0 uppercase italic leading-none">{previewOrder.company.name || 'MD DIESEL'}</h2>
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">SISTEMA GESTOR DE MANUTENÇÃO PESADA</p>
-               </div>
-               <div className="text-right">
-                  <div className="bg-[#1b2e85] text-white px-6 py-2 rounded-xl font-black text-2xl italic inline-block">OS: {previewOrder.id}</div>
-                  <p className="mt-2 font-black text-slate-400 text-[10px] uppercase tracking-tighter">EMITIDO: {formatDisplayDate(previewOrder.date)}</p>
-               </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2 mb-4">
-               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest flex items-center gap-1"><Building2 size={8}/> DADOS DA EMPRESA</h4>
-                  <p className="text-[10px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.company.name}</p>
-                  <p className="text-[9px] text-slate-500 font-bold leading-tight">CNPJ: {previewOrder.company.cnpj || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold leading-tight">TEL: {previewOrder.company.phone || '---'}</p>
-               </div>
-               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest flex items-center gap-1"><User size={8}/> DADOS DO CLIENTE</h4>
-                  <p className="text-[10px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.client.name || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold leading-tight">CPF/CNPJ: {previewOrder.client.idNumber || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold leading-tight">TEL: {previewOrder.client.phone || '---'}</p>
-               </div>
-               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                  <h4 className="text-[7px] font-black text-[#1b2e85] uppercase mb-1.5 tracking-widest flex items-center gap-1"><Truck size={8}/> DADOS DO VEÍCULO</h4>
-                  <p className="text-[10px] font-black text-slate-900 leading-tight uppercase mb-1">{previewOrder.vehicle.brand} {previewOrder.vehicle.model || '---'}</p>
-                  <p className="text-[9px] text-slate-500 font-bold leading-tight uppercase">PLACA: <span className="text-[#1b2e85] font-black">{previewOrder.vehicle.plate || '---'}</span></p>
-                  <p className="text-[9px] text-slate-500 font-bold leading-tight uppercase">KM/H: {previewOrder.vehicle.mileage || '---'}</p>
-               </div>
-            </div>
-
-            <div className="border border-slate-200 rounded-xl mb-4 flex-1 overflow-hidden min-h-[350px]">
-               <table className="w-full text-left border-collapse">
-                 <thead>
-                   <tr className="bg-slate-100 border-b border-slate-200">
-                     <th className="px-5 py-2.5 text-[8px] font-black text-[#1b2e85] uppercase tracking-widest">DESCRIÇÃO DOS SERVIÇOS</th>
-                     <th className="px-5 py-2.5 text-[8px] font-black text-[#1b2e85] uppercase tracking-widest text-right w-32">VALOR (R$)</th>
-                   </tr>
-                 </thead>
-                 <tbody className="text-[10.5px]">
-                   {(previewOrder.serviceItems || []).map((item, idx) => (
-                     <tr key={idx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50">
-                       <td className="px-5 py-2 font-bold text-slate-700 uppercase">{item.description || '---'}</td>
-                       <td className="px-5 py-2 font-black text-slate-900 text-right">
-                         {item.value > 0 ? item.value.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '---'}
-                       </td>
-                     </tr>
-                   ))}
-                   {Array.from({ length: Math.max(0, 15 - (previewOrder.serviceItems?.length || 0)) }).map((_, i) => (
-                     <tr key={`empty-${i}`} className="border-b border-slate-50 last:border-0 h-6">
-                       <td></td>
-                       <td></td>
-                     </tr>
-                   ))}
-                 </tbody>
-               </table>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 items-end mb-4">
-               <div className="bg-slate-900 text-white p-4 rounded-xl border-l-4 border-sky-400">
-                  <p className="text-[7px] font-black text-sky-400 uppercase tracking-widest mb-1">PAGAMENTO</p>
-                  <p className="text-base font-black uppercase italic">{previewOrder.paymentMethod}</p>
-               </div>
-               <div className="border-2 border-[#1b2e85] rounded-xl overflow-hidden shadow-sm">
-                  <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
-                     <span className="text-slate-400 uppercase">SUBTOTAL ITENS (REF.)</span>
-                     <span className="text-slate-400">R$ {(previewOrder.serviceItems?.reduce((acc, curr) => acc + curr.value, 0) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
-                     <span className="text-slate-400 uppercase">MÃO DE OBRA ADIC.</span>
-                     <span className="text-[#1b2e85]">R$ {previewOrder.values.labor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="px-4 py-1.5 flex justify-between border-b border-slate-100 bg-slate-50 text-[8px] font-bold">
-                     <span className="text-slate-400 uppercase">DESLOCAMENTO</span>
-                     <span className="text-[#1b2e85]">R$ {previewOrder.values.travel.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                  </div>
-                  <div className="p-3.5 bg-[#1b2e85] text-white flex justify-between items-center">
-                     <span className="font-black text-[9px] tracking-widest uppercase">TOTAL GERAL</span>
-                     <span className="text-xl font-black italic">R$ {calculateTotal(previewOrder).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                  </div>
-               </div>
-            </div>
-
-            <div className="mt-auto grid grid-cols-2 gap-10 text-center pb-2 pt-8">
-                <div className="border-t border-slate-400 pt-1.5"><p className="font-black text-[7px] uppercase tracking-widest text-slate-400">ASSINATURA RESPONSÁVEL CLIENTE</p></div>
-                <div className="border-t border-slate-400 pt-1.5"><p className="font-black text-[7px] uppercase tracking-widest text-slate-400">{previewOrder.company.name} - PRESTADOR</p></div>
-            </div>
-            
-            <div className="absolute bottom-2 right-4 text-[6px] font-black text-slate-200 tracking-tighter uppercase italic">Gerado por MD Diesel OS Manager</div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen flex flex-col text-slate-900 bg-[#f1f5f9] overflow-x-hidden">
       <header className="fixed top-0 left-0 right-0 h-[135px] lg:h-[90px] bg-[#1b2e85] text-white shadow-2xl z-[100] border-b-4 border-sky-500 flex items-center">
-        <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex flex-col lg:flex-row justify-between items-center relative z-10 gap-3 lg:gap-0">
+        <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex flex-col lg:flex-row justify-between items-center gap-3">
           <div className="text-center lg:text-left">
-             <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tighter leading-none text-glow italic">
-               MD DIESEL
-             </h1>
-             <p className="text-[10px] sm:text-[11px] font-black text-sky-400 uppercase tracking-[0.4em] mt-1 lg:mt-2">
-               MECÂNICA PESADA
-             </p>
+             <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tighter leading-none text-glow italic">MD DIESEL</h1>
+             <p className="text-[10px] sm:text-[11px] font-black text-sky-400 uppercase tracking-[0.4em] mt-1 lg:mt-2">MECÂNICA PESADA</p>
           </div>
-          
           <nav className="flex bg-white/10 p-1 rounded-xl backdrop-blur-md border border-white/20">
-            <button 
-              onClick={handleNewOrder} 
-              className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'form' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
-            >
-              NOVA OS
-            </button>
-            <button 
-              onClick={() => { setActiveTab('list'); setSearchTerm(''); }} 
-              className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
-            >
-              HISTÓRICO
-            </button>
-            <button 
-              onClick={() => { setActiveTab('prices'); setSearchTerm(''); }} 
-              className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'prices' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}
-            >
-              TABELA
-            </button>
+            <button onClick={() => { setOrder(createInitialOrder(savedOrders, companyProfile)); setActiveTab('form'); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'form' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>NOVA OS</button>
+            <button onClick={() => { setActiveTab('list'); setSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>HISTÓRICO</button>
+            <button onClick={() => { setActiveTab('prices'); setSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'prices' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>TABELA</button>
           </nav>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 mt-[150px] lg:mt-[110px]">
-        {loading && (
-          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] flex items-center justify-center pointer-events-none">
-            <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-200">
-              <Loader2 size={40} className="text-[#1b2e85] animate-spin" />
-              <p className="font-black text-[10px] uppercase tracking-widest text-[#1b2e85]">Processando...</p>
-            </div>
+        {showSplash && (
+          <div className={`fixed inset-0 bg-[#1b2e85] z-[200] flex flex-col items-center justify-center transition-all duration-500 ${isSplashClosing ? 'animate-splash-out' : 'animate-splash-in'}`}>
+            <h2 className="text-5xl sm:text-8xl font-black text-white italic tracking-tighter text-glow uppercase animate-pulse">MD Diesel</h2>
+            <div className="h-1.5 w-32 bg-sky-400 mt-6 rounded-full shadow-lg"></div>
           </div>
         )}
 
@@ -464,30 +306,28 @@ const App: React.FC = () => {
             <div className="flex justify-between items-center bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                <h2 className="text-xl font-black text-slate-800 uppercase italic">Registro de OS</h2>
                <div className="text-right">
-                 <span className="text-[9px] font-black text-slate-400 block uppercase tracking-widest">Nº</span>
+                 <span className="text-[9px] font-black text-slate-400 block uppercase tracking-widest text-center">Nº</span>
                  <span className="text-2xl font-black text-[#1b2e85] italic">{order.id}</span>
                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 relative">
-                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <Building2 size={18} className="text-[#1b2e85]" />
-                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Dados da Empresa (Fixo)</h3>
-                </div>
-                <Input label="Razão Social" value={order.company.name} onChange={e => setOrder({...order, company: {...order.company, name: e.target.value}})} placeholder="Ex: MD DIESEL LTDA" />
-                <Input label="CNPJ" value={order.company.cnpj} onChange={e => setOrder({...order, company: {...order.company, cnpj: e.target.value}})} placeholder="00.000.000/0001-00" />
-                <Input label="WhatsApp/Contato" value={order.company.phone} onChange={e => setOrder({...order, company: {...order.company, phone: e.target.value}})} placeholder="(00) 00000-0000" />
-              </section>
-
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                   <User size={18} className="text-[#1b2e85]" />
                   <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Dados do Cliente</h3>
                 </div>
-                <Input label="Nome ou Razão Social" value={order.client.name} onChange={e => setOrder({...order, client: {...order.client, name: e.target.value}})} placeholder="Ex: Transportadora Santos" />
-                <Input label="CPF/CNPJ" value={order.client.idNumber} onChange={e => setOrder({...order, client: {...order.client, idNumber: e.target.value}})} placeholder="000.000.000-00" />
-                <Input label="WhatsApp" value={order.client.phone} onChange={e => setOrder({...order, client: {...order.client, phone: e.target.value}})} placeholder="(00) 00000-0000" />
+                <Input label="Nome ou Razão Social" value={order.client?.name || ''} onChange={e => setOrder({...order, client: {...order.client, name: e.target.value}})} placeholder="Nome do cliente" />
+                <Input label="CPF/CNPJ" value={order.client?.idNumber || ''} onChange={e => setOrder({...order, client: {...order.client, idNumber: e.target.value}})} placeholder="000.000.000-00" />
+              </section>
+
+              <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 border-t-4 border-t-[#1b2e85]">
+                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <ShieldCheck size={18} className="text-[#1b2e85]" />
+                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Responsável Técnico</h3>
+                </div>
+                <Input label="Nome do Mecânico" value={order.mechanic?.name || ''} onChange={e => setOrder({...order, mechanic: {...order.mechanic, name: e.target.value}})} placeholder="Mecânico responsável" />
+                <Input label="CPF/CNPJ" value={order.mechanic?.idNumber || ''} onChange={e => setOrder({...order, mechanic: {...order.mechanic, idNumber: e.target.value}})} placeholder="000.000.000-00" />
               </section>
 
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -496,91 +336,63 @@ const App: React.FC = () => {
                   <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Dados do Veículo</h3>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <Input label="Placa" value={order.vehicle.plate} onChange={e => setOrder({...order, vehicle: {...order.vehicle, plate: e.target.value}})} placeholder="AAA-0000" />
-                  <Input label="KM/Horas" value={order.vehicle.mileage} onChange={e => setOrder({...order, vehicle: {...order.vehicle, mileage: e.target.value}})} placeholder="000.000" />
+                  <Input label="Placa" value={order.vehicle?.plate || ''} onChange={e => setOrder({...order, vehicle: {...order.vehicle, plate: e.target.value}})} placeholder="ABC-1234" />
+                  <Input label="KM/Horas" value={order.vehicle?.mileage || ''} onChange={e => setOrder({...order, vehicle: {...order.vehicle, mileage: e.target.value}})} placeholder="00000" />
                 </div>
-                <Input label="Marca/Modelo" value={order.vehicle.brand} onChange={e => setOrder({...order, vehicle: {...order.vehicle, brand: e.target.value}})} placeholder="Ex: Scania R450 / Volvo FH" />
+                <Input label="Marca/Modelo" value={order.vehicle?.brand || ''} onChange={e => setOrder({...order, vehicle: {...order.vehicle, brand: e.target.value}})} placeholder="Ex: Scania R450" />
               </section>
 
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                  <DollarSign size={18} className="text-[#1b2e85]" />
-                  <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Informações Adicionais (Valores do Total)</h3>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <Input label="Mão de Obra Adic. (R$)" type="number" value={order.values.labor} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
-                  <Input label="Deslocamento (R$)" type="number" value={order.values.travel} onChange={e => setOrder({...order, values: {...order.values, travel: Number(e.target.value)}})} />
-                </div>
-                <label className="text-[10px] font-black uppercase text-slate-400">Método de Pagamento</label>
-                <select 
-                  value={order.paymentMethod}
-                  onChange={e => setOrder({...order, paymentMethod: e.target.value as PaymentMethod})}
-                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3.5 font-black text-slate-800 outline-none focus:border-[#1b2e85] text-xs cursor-pointer transition-all shadow-inner"
-                >
-                  {Object.values(PaymentMethod).map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
+                 <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                    <DollarSign size={18} className="text-[#1b2e85]" />
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Valores & Pagamento</h3>
+                 </div>
+                 <div className="grid grid-cols-2 gap-4">
+                    <Input label="Mão de Obra (R$)" type="number" value={order.values?.labor || 0} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
+                    <Input label="Deslocamento (R$)" type="number" value={order.values?.travel || 0} onChange={e => setOrder({...order, values: {...order.values, travel: Number(e.target.value)}})} />
+                 </div>
+                 <div className="flex flex-col gap-1">
+                   <label className="text-[11px] font-bold uppercase text-slate-500">Forma de Pagamento</label>
+                   <select value={order.paymentMethod} onChange={e => setOrder({...order, paymentMethod: e.target.value as PaymentMethod})} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2.5 font-medium text-slate-800 text-sm outline-none focus:border-[#1b2e85]">
+                     {Object.values(PaymentMethod).map(m => <option key={m} value={m}>{m}</option>)}
+                   </select>
+                 </div>
               </section>
 
               <section className="md:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                   <div className="flex items-center gap-2">
                     <ClipboardList size={18} className="text-[#1b2e85]" />
-                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Detalhamento dos Serviços (Apenas Registro)</h3>
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Descrição Técnica dos Serviços</h3>
                   </div>
-                  <button 
-                    onClick={addServiceItem}
-                    className="flex items-center gap-1 bg-[#1b2e85] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-sky-600 transition-colors shadow-lg active:scale-95"
-                  >
-                    <Plus size={14} /> Adicionar Serviço
+                  <button onClick={() => setOrder({...order, serviceItems: [...(order.serviceItems || []), { description: '', value: 0 }]})} className="bg-[#1b2e85] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-sky-600 transition-all flex items-center gap-2">
+                    <Plus size={14} /> Adicionar Linha
                   </button>
                 </div>
-                
                 <div className="space-y-3">
                   {(order.serviceItems || []).map((item, index) => (
-                    <div key={index} className="flex gap-3 items-end group animate-in slide-in-from-right-2 duration-200">
-                      <div className="flex-1">
-                        <Input 
-                          label={index === 0 ? "Descrição do Item/Serviço" : ""} 
-                          value={item.description} 
-                          onChange={e => updateServiceItem(index, 'description', e.target.value)} 
-                          placeholder="Ex: Troca de óleo do motor"
-                        />
-                      </div>
-                      <div className="w-32">
-                        <Input 
-                          label={index === 0 ? "Valor Ref. (R$)" : ""} 
-                          type="number" 
-                          value={item.value} 
-                          onChange={e => updateServiceItem(index, 'value', Number(e.target.value))} 
-                        />
-                      </div>
-                      <button 
-                        onClick={() => removeServiceItem(index)}
-                        className="p-3 mb-0.5 text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-                        title="Remover linha"
-                      >
-                        <Trash size={18} />
-                      </button>
+                    <div key={index} className="flex gap-3 items-end group">
+                      <div className="flex-1"><Input label={index === 0 ? "Descrição do Serviço" : ""} value={item.description} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, description: e.target.value} : it)})} /></div>
+                      <div className="w-32"><Input label={index === 0 ? "Valor Ref. (R$)" : ""} type="number" value={item.value} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, value: Number(e.target.value)} : it)})} /></div>
+                      <button onClick={() => { const ni = [...(order.serviceItems || [])]; ni.splice(index, 1); setOrder({...order, serviceItems: ni})}} className="p-3 text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash size={18}/></button>
                     </div>
                   ))}
                 </div>
               </section>
 
-              <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl border-4 border-sky-400/20 relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/5 to-transparent pointer-events-none"></div>
-                <span className="text-sky-300 text-[11px] font-black uppercase mb-2 tracking-[0.3em]">VALOR TOTAL (Mão de Obra + Deslocamento)</span>
-                <div className="text-5xl sm:text-6xl font-black text-white italic drop-shadow-lg">
-                  R$ {calculateTotal(order).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </div>
+              <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-4 opacity-10"><DollarSign size={80} className="text-white"/></div>
+                <span className="text-sky-300 text-[10px] font-black uppercase mb-2 tracking-widest">TOTAL FINAL DA ORDEM</span>
+                <div className="text-6xl font-black text-white italic drop-shadow-xl">R$ {formatCurrency(calculateTotal(order))}</div>
               </section>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4 pt-6">
-              <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-emerald-800 group">
-                <Save size={26} className="group-hover:scale-110 transition-transform"/> GRAVAR ORDEM DE SERVIÇO
+              <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-xl shadow-xl transition-all border-b-4 border-emerald-800 flex items-center justify-center gap-3 active:scale-95">
+                <Save size={26} /> SALVAR ORDEM DE SERVIÇO
               </button>
-              <button onClick={() => order.client.name ? setPreviewOrder(order) : alert("Preencha ao menos o nome do cliente.")} className="bg-sky-600 hover:bg-sky-500 text-white px-10 py-6 rounded-2xl font-black text-xl shadow-xl transition-all active:scale-95 border-b-4 border-sky-800 flex items-center justify-center gap-3">
-                <FileDown size={26} /> PREVIEW PDF
+              <button onClick={() => setPreviewOrder(order)} className="bg-sky-600 hover:bg-sky-500 text-white px-10 py-6 rounded-2xl font-black text-xl shadow-xl transition-all border-b-4 border-sky-800 flex items-center justify-center gap-3 active:scale-95">
+                <FileDown size={26} /> GERAR PREVIEW PDF
               </button>
             </div>
           </div>
@@ -589,48 +401,28 @@ const App: React.FC = () => {
         {activeTab === 'list' && (
           <div className="space-y-6 animate-in fade-in duration-500 pb-12">
             <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-               <h2 className="text-xl font-black text-slate-800 uppercase italic">Banco de Ordens</h2>
+               <h2 className="text-xl font-black text-slate-800 uppercase italic">Histórico de OS</h2>
                <div className="relative w-full sm:w-80">
                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                 <input 
-                   type="text" 
-                   placeholder="Buscar por nome, placa ou número..." 
-                   className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs shadow-inner" 
-                   value={searchTerm} 
-                   onChange={e => setSearchTerm(e.target.value)} 
-                 />
+                 <input type="text" placeholder="Buscar placa ou cliente..." className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
                </div>
             </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredOrders.map(item => (
-                <div key={item.id} className="bg-white rounded-[32px] shadow-sm border border-slate-100 hover:shadow-2xl transition-all overflow-hidden flex flex-col group border-b-4 border-b-slate-200 hover:border-b-[#1b2e85]">
+                <div key={item?.id} className="bg-white rounded-[32px] shadow-sm border border-slate-100 overflow-hidden flex flex-col group border-b-4 border-b-slate-200 hover:border-b-[#1b2e85] transition-all">
                   <div className="p-7 flex-1">
                     <div className="flex justify-between items-start mb-5">
-                      <span className="bg-[#1b2e85] text-white px-4 py-1.5 rounded-xl text-[10px] font-black italic shadow-lg">{item.id}</span>
-                      <div className="text-right">
-                        <span className="text-[10px] font-black text-slate-300 uppercase block">{formatDisplayDate(item.date)}</span>
-                      </div>
+                      <span className="bg-[#1b2e85] text-white px-4 py-1.5 rounded-xl text-[10px] font-black italic">{item?.id}</span>
+                      <span className="text-[10px] font-black text-slate-300 uppercase">{item?.date}</span>
                     </div>
-                    <h4 className="font-black text-slate-900 text-xl uppercase truncate mb-1">{item.client.name}</h4>
-                    <p className="text-[11px] font-black text-sky-600 uppercase tracking-widest mb-5 flex items-center gap-2">
-                      <Truck size={12} /> {item.vehicle.plate}
-                    </p>
-                    <div className="pt-5 border-t border-slate-50 text-3xl font-black text-[#1b2e85] italic">
-                      <span className="text-[10px] font-bold text-slate-300 mr-2 uppercase not-italic">Total</span>
-                      R$ {calculateTotal(item).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                    </div>
+                    <h4 className="font-black text-slate-900 text-xl uppercase truncate mb-1">{item?.client?.name || 'Sem Nome'}</h4>
+                    <p className="text-[11px] font-black text-sky-600 uppercase tracking-widest">{item?.vehicle?.plate || '---'}</p>
+                    <div className="pt-5 border-t border-slate-50 text-2xl font-black text-[#1b2e85] italic mt-4">R$ {formatCurrency(calculateTotal(item))}</div>
                   </div>
                   <div className="bg-slate-50 p-5 grid grid-cols-3 gap-3 border-t border-slate-100">
-                    <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo(0,0); }} className="bg-white p-4 rounded-2xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm active:scale-90" title="Editar">
-                      <History size={20} />
-                    </button>
-                    <button onClick={() => setPreviewOrder(item)} className="bg-white p-4 rounded-2xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm active:scale-90" title="Exportar PDF">
-                      <Download size={20} />
-                    </button>
-                    <button onClick={() => handleDelete(item.id)} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm active:scale-90" title="Excluir">
-                      <Trash2 size={20} />
-                    </button>
+                    <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo({ top: 0, left: 0 }); }} className="bg-white p-4 rounded-2xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm"><History size={20} /></button>
+                    <button onClick={() => setPreviewOrder(item)} className="bg-white p-4 rounded-2xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm"><Download size={20} /></button>
+                    <button onClick={() => { if(window.confirm("Deseja realmente excluir esta OS?")) { supabase.from('orders').delete().match({id: item.id}).then(() => fetchInitialData()) } }} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20} /></button>
                   </div>
                 </div>
               ))}
@@ -640,124 +432,157 @@ const App: React.FC = () => {
 
         {activeTab === 'prices' && (
           <div className="space-y-6 animate-in fade-in duration-500 pb-12">
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-               <div className="flex items-center gap-3">
-                 <Tag className="text-[#1b2e85]" size={24} />
-                 <h2 className="text-xl font-black text-slate-800 uppercase italic">Tabela de Preços (Catálogo)</h2>
+            <div className="bg-[#1b2e85] p-8 rounded-3xl shadow-xl border-b-4 border-sky-500">
+               <div className="flex items-center justify-between mb-6">
+                 <h3 className="text-white font-black text-sm uppercase tracking-widest flex items-center gap-3"><PlusCircle size={20} /> Cadastrar no Catálogo</h3>
+                 {loading && <Loader2 className="animate-spin text-sky-400" size={24} />}
                </div>
-               <div className="relative w-full sm:w-80">
-                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                 <input 
-                   type="text" 
-                   placeholder="Procurar serviço/item..." 
-                   className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs shadow-inner" 
-                   value={searchTerm} 
-                   onChange={e => setSearchTerm(e.target.value)} 
-                 />
+               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
+                  <div className="sm:col-span-2">
+                    <label className="text-[10px] font-black text-sky-300 uppercase mb-1.5 block">Descrição do Serviço / Peça</label>
+                    <input type="text" value={newItemDesc} onChange={e => setNewItemDesc(e.target.value)} placeholder="Ex: TROCA DE TURBINA" className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 font-black text-white text-xs outline-none focus:bg-white/20 placeholder:text-white/30" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black text-sky-300 uppercase mb-1.5 block">Valor (R$)</label>
+                    <input type="number" value={newItemValue} onChange={e => setNewItemValue(Number(e.target.value))} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 font-black text-white text-xs outline-none focus:bg-white/20" />
+                  </div>
+                  <button onClick={handleAddItemToCatalog} disabled={loading} className="bg-sky-400 hover:bg-sky-300 text-[#1b2e85] py-3.5 rounded-xl font-black text-xs uppercase shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50">
+                    <Plus size={18} /> {loading ? 'AGUARDE...' : 'CADASTRAR'}
+                  </button>
                </div>
             </div>
 
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                <table className="w-full text-left">
-                  <thead>
-                    <tr className="bg-slate-900 text-white">
+                  <thead className="bg-slate-900 text-white">
+                    <tr>
                       <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Serviço / Peça</th>
-                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center">Ocorrências</th>
-                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Preço Sugerido (R$)</th>
-                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center w-24">Ações</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Preço Sugerido</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center w-32">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {priceTableData.map((item, idx) => {
-                      const key = item.description.toUpperCase();
-                      const isEditing = editingPriceKey === key;
-                      
-                      return (
-                        <tr key={idx} className={`border-b border-slate-50 transition-colors group ${isEditing ? 'bg-sky-50/50' : 'hover:bg-slate-50/50'}`}>
-                          <td className="px-6 py-4">
-                             <div className="flex items-center gap-3">
-                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${isEditing ? 'bg-[#1b2e85] text-white' : 'bg-sky-50 text-[#1b2e85] group-hover:bg-[#1b2e85] group-hover:text-white'}`}>
-                                  <Briefcase size={14} />
-                                </div>
-                                <span className="font-black text-slate-700 uppercase text-xs">{item.description}</span>
-                             </div>
-                          </td>
-                          <td className="px-6 py-4 text-center">
-                             <span className="bg-slate-100 text-slate-400 px-3 py-1 rounded-full text-[9px] font-black">{item.count}x registrado</span>
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                             {isEditing ? (
-                               <div className="flex justify-end items-center animate-in zoom-in-95 duration-200">
-                                 <span className="mr-2 font-black text-sky-600 text-sm italic">R$</span>
-                                 <input 
-                                   autoFocus
-                                   type="number" 
-                                   className="w-32 bg-white border-2 border-sky-400 rounded-lg px-3 py-1.5 font-black text-slate-800 text-right text-sm outline-none shadow-sm"
-                                   value={tempPriceValue}
-                                   onChange={e => setTempPriceValue(Number(e.target.value))}
-                                   onKeyDown={e => e.key === 'Enter' && handleUpdatePriceInCatalog(key)}
-                                 />
-                               </div>
-                             ) : (
-                               <span className="text-[#1b2e85] font-black text-base italic">R$ {item.lastValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                             )}
-                          </td>
-                          <td className="px-6 py-4 text-center">
-                             <div className="flex justify-center gap-2">
-                               {isEditing ? (
-                                 <>
-                                   <button 
-                                     onClick={() => handleUpdatePriceInCatalog(key)}
-                                     className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-400 transition-all shadow-md active:scale-90"
-                                     title="Salvar Novo Preço"
-                                   >
-                                     <Check size={16} />
-                                   </button>
-                                   <button 
-                                     onClick={() => setEditingPriceKey(null)}
-                                     className="p-2 bg-slate-300 text-slate-600 rounded-lg hover:bg-slate-200 transition-all shadow-md active:scale-90"
-                                     title="Cancelar"
-                                   >
-                                     <X size={16} />
-                                   </button>
-                                 </>
-                               ) : (
-                                 <button 
-                                   onClick={() => {
-                                     setEditingPriceKey(key);
-                                     setTempPriceValue(item.lastValue);
-                                   }}
-                                   className="p-2 bg-white border border-slate-200 text-slate-400 rounded-lg hover:text-[#1b2e85] hover:border-[#1b2e85] transition-all shadow-sm active:scale-90 opacity-0 group-hover:opacity-100"
-                                   title="Editar Preço Sugerido"
-                                 >
-                                   <Pencil size={16} />
-                                 </button>
-                               )}
-                             </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {priceCatalog && Object.entries(priceCatalog).length > 0 ? Object.entries(priceCatalog).map(([key, val]) => (
+                      <tr key={key} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                        <td className="px-6 py-4 font-black text-slate-700 uppercase text-xs">{key}</td>
+                        <td className="px-6 py-4 text-right font-black text-[#1b2e85] italic text-base">R$ {formatCurrency(val as number)}</td>
+                        <td className="px-6 py-4 text-center">
+                          <button 
+                            onClick={(e) => { e.preventDefault(); handleRemoveFromCatalog(key); }} 
+                            disabled={loading}
+                            className="p-3 text-red-500 hover:bg-red-50 transition-all rounded-xl disabled:opacity-50 flex items-center justify-center mx-auto"
+                            title="Remover permanentemente"
+                          >
+                            <Trash2 size={20}/>
+                          </button>
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={3} className="px-6 py-12 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">O catálogo está vazio.</td>
+                      </tr>
+                    )}
                   </tbody>
                </table>
-            </div>
-            
-            <div className="bg-sky-50 border border-sky-100 p-6 rounded-2xl flex items-center gap-4">
-               <div className="p-3 bg-white rounded-xl text-sky-600 shadow-sm">
-                  <Pencil size={20} />
-               </div>
-               <p className="text-[10px] font-bold text-sky-800 uppercase leading-relaxed italic">
-                 Dica: O "Valor Ref." dos itens de serviço servem para sua base de preços, mas o Total da OS agora soma apenas Mão de Obra e Deslocamento.
-               </p>
             </div>
           </div>
         )}
       </main>
-      
-      <footer className="py-12 bg-white border-t border-slate-200 mt-auto">
-        <div className="max-w-5xl mx-auto px-6 text-center">
-          <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.6em] italic">MD DIESEL • SISTEMA GESTOR PROFISSIONAL</p>
+
+      {/* PREVIEW PDF */}
+      {previewOrder && (
+        <div className="fixed inset-0 bg-slate-900/90 z-[300] flex flex-col items-center p-4 overflow-y-auto no-print">
+            <div className="max-w-[210mm] w-full flex justify-between items-center mb-6 bg-white/10 p-4 rounded-2xl backdrop-blur-md">
+                <button onClick={() => setPreviewOrder(null)} className="text-white font-black text-xs uppercase flex items-center gap-2 hover:text-sky-400"><ArrowLeft size={18}/> FECHAR PREVIEW</button>
+                <button onClick={() => downloadPDF(previewOrder)} className="bg-sky-400 text-[#1b2e85] px-6 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 shadow-xl hover:bg-sky-300"><Printer size={18}/> IMPRIMIR / SALVAR PDF</button>
+            </div>
+            
+            <div id="pdf-content-to-print" className="bg-white w-[210mm] min-h-[297mm] p-[15mm] text-slate-800 shadow-2xl relative flex flex-col">
+                <div className="border-b-[5px] border-[#1b2e85] pb-6 mb-8 flex justify-between items-end">
+                   <div>
+                      <h2 className="text-4xl font-black text-[#1b2e85] italic leading-none">{previewOrder?.company?.name || 'MD DIESEL'}</h2>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">GESTÃO DE MANUTENÇÃO - MECÂNICA PESADA</p>
+                   </div>
+                   <div className="text-right">
+                      <div className="bg-[#1b2e85] text-white px-6 py-2 rounded-xl font-black text-2xl italic">OS: {previewOrder?.id}</div>
+                      <p className="mt-2 font-black text-slate-400 text-[10px]">DATA: {previewOrder?.date}</p>
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mb-8">
+                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                      <h4 className="text-[8px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest">DADOS DO CLIENTE</h4>
+                      <p className="text-xs font-black uppercase">{previewOrder?.client?.name || '---'}</p>
+                      <p className="text-[10px] text-slate-500 uppercase">DOC: {previewOrder?.client?.idNumber || '---'}</p>
+                   </div>
+                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                      <h4 className="text-[8px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest">RESPONSÁVEL TÉCNICO</h4>
+                      <p className="text-xs font-black uppercase">{previewOrder?.mechanic?.name || '---'}</p>
+                      <p className="text-[10px] text-slate-500 uppercase">DOC: {previewOrder?.mechanic?.idNumber || '---'}</p>
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 mb-8">
+                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                      <h4 className="text-[8px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest">VEÍCULO</h4>
+                      <p className="text-xs font-black uppercase">PLACA: {previewOrder?.vehicle?.plate || '---'} | MODELO: {previewOrder?.vehicle?.brand || '---'}</p>
+                      <p className="text-[10px] text-slate-500">KM / HORAS: {previewOrder?.vehicle?.mileage || '---'}</p>
+                   </div>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl mb-8 overflow-hidden flex-1">
+                   <table className="w-full text-left">
+                      <thead className="bg-slate-100 border-b border-slate-200">
+                        <tr><th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest">DESCRIÇÃO DOS SERVIÇOS</th><th className="px-4 py-3 text-[9px] font-black uppercase text-right w-32">VALOR REF.</th></tr>
+                      </thead>
+                      <tbody>
+                        {(previewOrder?.serviceItems || []).map((item: ServiceItem, i: number) => (
+                          <tr key={i} className="border-t border-slate-50">
+                            <td className="px-4 py-2.5 text-xs uppercase font-medium">{item?.description || '---'}</td>
+                            <td className="px-4 py-2.5 text-xs text-right font-bold">R$ {formatCurrency(item?.value)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                   </table>
+                </div>
+
+                <div className="grid grid-cols-2 gap-8 items-end mb-12">
+                   <div className="bg-slate-900 text-white p-5 rounded-2xl border-l-4 border-sky-400">
+                      <p className="text-[7px] font-black text-sky-400 uppercase mb-1 tracking-widest">PAGAMENTO</p>
+                      <p className="text-sm font-black uppercase italic">{previewOrder?.paymentMethod || 'Pix'}</p>
+                   </div>
+                   <div className="border-2 border-[#1b2e85] rounded-2xl overflow-hidden">
+                      <div className="px-4 py-2 flex justify-between bg-slate-50 border-b border-slate-100 text-[9px] font-bold">
+                         <span className="text-slate-400 uppercase">MÃO DE OBRA</span>
+                         <span className="text-[#1b2e85]">R$ {formatCurrency(previewOrder?.values?.labor || 0)}</span>
+                      </div>
+                      <div className="px-4 py-2 flex justify-between bg-slate-50 border-b border-slate-100 text-[9px] font-bold">
+                         <span className="text-slate-400 uppercase">DESLOCAMENTO</span>
+                         <span className="text-[#1b2e85]">R$ {formatCurrency(previewOrder?.values?.travel || 0)}</span>
+                      </div>
+                      <div className="p-4 bg-[#1b2e85] text-white flex justify-between items-center">
+                         <span className="font-black text-[10px] uppercase">VALOR TOTAL</span>
+                         <span className="text-3xl font-black italic">R$ {formatCurrency(calculateTotal(previewOrder as ServiceOrder))}</span>
+                      </div>
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-16 border-t border-slate-200 pt-6 text-center mt-auto">
+                   <div>
+                      <div className="h-0.5 w-full bg-slate-300 mb-2"></div>
+                      <p className="font-black text-[8px] text-slate-400 uppercase tracking-widest">ASSINATURA CLIENTE</p>
+                   </div>
+                   <div>
+                      <div className="h-0.5 w-full bg-slate-300 mb-2"></div>
+                      <p className="font-black text-[8px] text-slate-400 uppercase tracking-widest">MECÂNICO RESPONSÁVEL</p>
+                   </div>
+                </div>
+            </div>
         </div>
+      )}
+      
+      <footer className="py-12 bg-white border-t border-slate-200 mt-auto text-center">
+        <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.6em] italic">MD DIESEL • GESTÃO DE MANUTENÇÃO PESADA</p>
       </footer>
     </div>
   );
