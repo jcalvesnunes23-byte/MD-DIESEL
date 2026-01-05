@@ -17,24 +17,16 @@ import {
   Plus,
   Trash,
   PlusCircle,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw,
+  AlertTriangle
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
 import Input from './components/Input';
 
-// Utilitário para pegar variáveis de ambiente de forma segura no browser
-const getEnv = (name: string, fallback: string) => {
-  try {
-    // @ts-ignore
-    return (typeof process !== 'undefined' && process.env && process.env[name]) || fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const SUPABASE_URL = getEnv('SUPABASE_URL', 'https://zozuufcvskbmdsppexsy.supabase.co');
-const SUPABASE_ANON_KEY = getEnv('SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo');
+const SUPABASE_URL = 'https://zozuufcvskbmdsppexsy.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -47,15 +39,14 @@ const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
+  const [dbError, setDbError] = useState<string | null>(null);
   
   const [showSplash, setShowSplash] = useState(false);
   const [isSplashClosing, setIsSplashClosing] = useState(false);
 
-  // O catálogo agora é uma lista de objetos vindos da tabela 'catalog'
   const [priceCatalog, setPriceCatalog] = useState<Record<string, number>>({});
-  
   const [newItemDesc, setNewItemDesc] = useState('');
-  const [newItemValue, setNewItemValue] = useState<number>(0);
+  const [newItemValue, setNewItemValue] = useState<string>('');
 
   const [companyProfile, setCompanyProfile] = useState<ServiceOrder['company']>({
     name: 'MD DIESEL',
@@ -71,7 +62,22 @@ const App: React.FC = () => {
   const getErrorMessage = (err: any): string => {
     if (!err) return "Erro desconhecido";
     if (typeof err === 'string') return err;
-    return err.message || JSON.stringify(err);
+    
+    // Captura erro específico de tabela inexistente
+    if (err.code === 'PGRST205') {
+      return "Banco de Dados não configurado: A tabela necessária não existe no Supabase.";
+    }
+
+    const msg = err.message || err.error_description || (err.error && err.error.message);
+    const details = err.details || "";
+    
+    if (msg) return `${msg} ${details ? `(${details})` : ""}`;
+    
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
   };
 
   useEffect(() => {
@@ -92,117 +98,111 @@ const App: React.FC = () => {
     fetchInitialData(); 
   }, []);
 
-  const fetchInitialData = async () => {
-    setLoading(true);
-    try {
-      // 1. Perfil da Empresa
-      const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').maybeSingle();
-      if (profileData?.value) setCompanyProfile(prev => ({ ...prev, ...(profileData.value as any) }));
-
-      // 2. Catálogo de Preços (Tabela dedicada 'catalog')
-      const { data: catalogData, error: catalogError } = await supabase.from('catalog').select('description, price');
-      
-      if (catalogError) {
-        console.warn("Tabela 'catalog' não encontrada ou erro, tentando 'settings' como fallback...", catalogError);
-        // Fallback para o modo antigo caso a tabela nova ainda não exista
-        const { data: oldCatalog } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
-        if (oldCatalog?.value) setPriceCatalog(oldCatalog.value as Record<string, number>);
-      } else if (catalogData) {
-        const catMap = catalogData.reduce((acc, curr) => {
-          acc[curr.description] = curr.price;
-          return acc;
-        }, {} as Record<string, number>);
-        setPriceCatalog(catMap);
-      }
-
-      // 3. Ordens de Serviço
-      const { data: ordersData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-      if (ordersData) {
-        setSavedOrders(ordersData.map(item => item.content as ServiceOrder));
-      }
-    } catch (err) {
-      console.error("Erro no carregamento:", err);
-    } finally { setLoading(false); }
+  const parseJsonValue = (val: any) => {
+    if (!val) return {};
+    if (typeof val === 'object' && val !== null) return val;
+    try { return JSON.parse(val); } catch { return {}; }
   };
 
+  /**
+   * CARREGAMENTO BLINDADO: Tenta Supabase, mas prioriza LocalStorage para não "sumir" com nada
+   */
+  const fetchInitialData = async () => {
+    setLoading(true);
+    setDbError(null);
+    try {
+      // 1. Carregar do LocalStorage primeiro (Garante que nada suma)
+      const localOrders = localStorage.getItem('md_diesel_orders_v2');
+      const localCatalog = localStorage.getItem('md_diesel_catalog_v2');
+      
+      if (localOrders) setSavedOrders(JSON.parse(localOrders));
+      if (localCatalog) setPriceCatalog(JSON.parse(localCatalog));
+
+      // 2. Tenta Sincronizar com Supabase
+      const { data: catalogData, error: catalogError } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
+      if (catalogError) {
+        if (catalogError.code === 'PGRST205') setDbError("Tabelas ausentes no Supabase. Usando modo Local.");
+        else console.warn("Erro Supabase Catálogo:", getErrorMessage(catalogError));
+      } else if (catalogData?.value) {
+        const remoteCatalog = parseJsonValue(catalogData.value);
+        setPriceCatalog(remoteCatalog);
+        localStorage.setItem('md_diesel_catalog_v2', JSON.stringify(remoteCatalog));
+      }
+
+      const { data: ordersData, error: ordersError } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+      if (!ordersError && ordersData) {
+        const remoteOrders = ordersData.map(item => item.content as ServiceOrder);
+        setSavedOrders(remoteOrders);
+        localStorage.setItem('md_diesel_orders_v2', JSON.stringify(remoteOrders));
+      }
+
+    } catch (err) {
+      console.error("Erro no fetch:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * SALVAMENTO NA TABELA (CORRIGIDO E PERSISTENTE)
+   */
   const handleAddItemToCatalog = async () => {
     const desc = newItemDesc.trim().toUpperCase();
-    if (!desc) {
-      alert("Informe a descrição do serviço.");
+    const cleanValue = newItemValue.toString().replace('R$', '').replace(/\s/g, '').replace(/\./g, '').replace(',', '.');
+    const valueNum = parseFloat(cleanValue);
+
+    if (!desc || isNaN(valueNum)) {
+      alert("⚠️ Preencha descrição e valor corretamente.");
       return;
     }
     
     setLoading(true);
-
     try {
-      // Tentamos salvar na tabela dedicada 'catalog'
-      const { error } = await supabase.from('catalog').upsert(
-        { description: desc, price: newItemValue },
-        { onConflict: 'description' }
-      );
+      // 1. Atualiza Localmente Imediatamente
+      const updatedCatalog = { ...priceCatalog, [desc]: valueNum };
+      setPriceCatalog(updatedCatalog);
+      localStorage.setItem('md_diesel_catalog_v2', JSON.stringify(updatedCatalog));
+
+      // 2. Tenta salvar no Supabase
+      const { error: saveError } = await supabase.from('settings').upsert({ id: 'price_catalog', value: updatedCatalog }, { onConflict: 'id' });
       
-      if (error) {
-        // Fallback: se 'catalog' falhar, tenta salvar no 'settings' (formato antigo)
-        const updatedCatalog = { ...priceCatalog, [desc]: newItemValue };
-        const { error: fallbackError } = await supabase.from('settings').upsert(
-          [{ id: 'price_catalog', value: updatedCatalog }],
-          { onConflict: 'id' }
-        );
-        if (fallbackError) throw fallbackError;
-        setPriceCatalog(updatedCatalog);
+      if (saveError) {
+        console.warn("Falha no backup online:", getErrorMessage(saveError));
+        alert("✅ Salvo no computador!\n(Ocorreu um erro ao enviar para a nuvem, mas seus dados estão seguros aqui).");
       } else {
-        // Sucesso na tabela nova
-        setPriceCatalog(prev => ({ ...prev, [desc]: newItemValue }));
+        alert(`✅ "${desc}" salvo com sucesso no catálogo!`);
       }
-      
+
       setNewItemDesc('');
-      setNewItemValue(0);
-      alert("Item salvo com sucesso!");
+      setNewItemValue('');
+      
     } catch (err) {
-      alert("Erro ao salvar no banco de dados: " + getErrorMessage(err));
+      alert("Erro ao processar item: " + getErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const handleRemoveFromCatalog = async (keyToRemove: string) => {
-    if (!window.confirm(`Deseja excluir permanentemente o item "${keyToRemove}"?`)) return;
+    if (!window.confirm(`Excluir "${keyToRemove}"?`)) return;
+    
+    const nextCatalog = { ...priceCatalog };
+    delete nextCatalog[keyToRemove];
+    
+    setPriceCatalog(nextCatalog);
+    localStorage.setItem('md_diesel_catalog_v2', JSON.stringify(nextCatalog));
     
     setLoading(true);
-
-    try {
-      // 1. Tenta deletar da tabela dedicada
-      const { error } = await supabase.from('catalog').delete().eq('description', keyToRemove);
-      
-      if (error) {
-        // Fallback para o modo antigo
-        const nextCatalog = { ...priceCatalog };
-        delete nextCatalog[keyToRemove];
-        const { error: fallbackError } = await supabase.from('settings').upsert(
-          [{ id: 'price_catalog', value: nextCatalog }],
-          { onConflict: 'id' }
-        );
-        if (fallbackError) throw fallbackError;
-        setPriceCatalog(nextCatalog);
-      } else {
-        setPriceCatalog(prev => {
-          const next = { ...prev };
-          delete next[keyToRemove];
-          return next;
-        });
-      }
-    } catch (err) {
-      alert("Erro ao excluir: " + getErrorMessage(err));
-    } finally {
-      setLoading(false);
-    }
+    await supabase.from('settings').upsert({ id: 'price_catalog', value: nextCatalog });
+    setLoading(false);
   };
 
   const calculateTotal = (targetOrder: ServiceOrder): number => {
     if (!targetOrder) return 0;
     const labor = targetOrder.values?.labor || 0;
     const travel = targetOrder.values?.travel || 0;
-    return labor + travel;
+    const itemsTotal = (targetOrder.serviceItems || []).reduce((acc, item) => acc + (item.value || 0), 0);
+    return labor + travel + itemsTotal;
   };
 
   const getNextNumericId = (orders: ServiceOrder[]) => {
@@ -233,15 +233,21 @@ const App: React.FC = () => {
     };
   };
 
-  const [order, setOrder] = useState<ServiceOrder>(() => createInitialOrder([], companyProfile));
+  const [order, setOrder] = useState<ServiceOrder>(() => createInitialOrder(savedOrders, companyProfile));
 
-  const handleSave = async () => {
+  const handleSaveOS = async () => {
     if (!order.client.name || !order.vehicle.plate) {
       alert("Preencha cliente e placa.");
       return;
     }
     setLoading(true);
     try {
+      // 1. Salva Local
+      const newOrders = [order, ...savedOrders.filter(o => o.id !== order.id)];
+      setSavedOrders(newOrders);
+      localStorage.setItem('md_diesel_orders_v2', JSON.stringify(newOrders));
+
+      // 2. Tenta Supabase
       const { error } = await supabase.from('orders').upsert({
         id: order.id,
         client_name: order.client.name,
@@ -249,12 +255,13 @@ const App: React.FC = () => {
         total_value: calculateTotal(order),
         content: order
       });
-      if (error) throw error;
-      await fetchInitialData();
-      alert("OS Salva!");
+      
+      if (error) console.warn("Erro ao sincronizar OS online:", getErrorMessage(error));
+      
+      alert("Ordem de Serviço salva!");
       setActiveTab('list');
     } catch(err) {
-      alert("Erro ao gravar OS: " + getErrorMessage(err));
+      alert("Erro crítico: " + getErrorMessage(err));
     } finally { setLoading(false); }
   };
 
@@ -298,7 +305,16 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 mt-[150px] lg:mt-[110px]">
+      {dbError && (
+        <div className="mt-[140px] lg:mt-[95px] mx-auto max-w-5xl w-full px-6">
+          <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-xl flex items-center gap-3">
+            <AlertTriangle className="text-amber-500" size={20} />
+            <p className="text-amber-800 text-xs font-bold uppercase tracking-tight">Modo Local Ativado: O banco de dados Supabase não foi configurado corretamente (tabelas ausentes).</p>
+          </div>
+        </div>
+      )}
+
+      <main className={`max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 ${dbError ? 'mt-4' : 'mt-[150px] lg:mt-[110px]'}`}>
         {showSplash && (
           <div className={`fixed inset-0 bg-[#1b2e85] z-[200] flex flex-col items-center justify-center transition-all duration-500 ${isSplashClosing ? 'animate-splash-out' : 'animate-splash-in'}`}>
             <h2 className="text-5xl sm:text-8xl font-black text-white italic tracking-tighter text-glow uppercase animate-pulse">MD Diesel</h2>
@@ -350,7 +366,7 @@ const App: React.FC = () => {
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                  <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                     <DollarSign size={18} className="text-[#1b2e85]" />
-                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Valores & Pagamento</h3>
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Valores Fixos</h3>
                  </div>
                  <div className="grid grid-cols-2 gap-4">
                     <Input label="Mão de Obra (R$)" type="number" value={order.values?.labor || 0} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
@@ -385,7 +401,6 @@ const App: React.FC = () => {
                             const val = e.target.value;
                             const newItems = (order.serviceItems || []).map((it, i) => {
                               if (i === index) {
-                                // Tenta auto-completar preço se existir no catálogo
                                 const suggestedPrice = priceCatalog[val.trim().toUpperCase()];
                                 return { ...it, description: val, value: suggestedPrice || it.value };
                               }
@@ -395,7 +410,7 @@ const App: React.FC = () => {
                           }} 
                         />
                       </div>
-                      <div className="w-32"><Input label={index === 0 ? "Valor Ref. (R$)" : ""} type="number" value={item.value} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, value: Number(e.target.value)} : it)})} /></div>
+                      <div className="w-32"><Input label={index === 0 ? "Valor (R$)" : ""} type="number" value={item.value} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, value: Number(e.target.value)} : it)})} /></div>
                       <button onClick={() => { const ni = [...(order.serviceItems || [])]; ni.splice(index, 1); setOrder({...order, serviceItems: ni})}} className="p-3 text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash size={18}/></button>
                     </div>
                   ))}
@@ -410,7 +425,7 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4 pt-6">
-              <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-xl shadow-xl transition-all border-b-4 border-emerald-800 flex items-center justify-center gap-3 active:scale-95">
+              <button onClick={handleSaveOS} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-6 rounded-2xl font-black text-xl shadow-xl transition-all border-b-4 border-emerald-800 flex items-center justify-center gap-3 active:scale-95">
                 <Save size={26} /> SALVAR ORDEM DE SERVIÇO
               </button>
               <button onClick={() => setPreviewOrder(order)} className="bg-sky-600 hover:bg-sky-500 text-white px-10 py-6 rounded-2xl font-black text-xl shadow-xl transition-all border-b-4 border-sky-800 flex items-center justify-center gap-3 active:scale-95">
@@ -429,8 +444,9 @@ const App: React.FC = () => {
                  <input type="text" placeholder="Buscar placa ou cliente..." className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
                </div>
             </div>
+            
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredOrders.map(item => (
+              {filteredOrders.length > 0 ? filteredOrders.map(item => (
                 <div key={item?.id} className="bg-white rounded-[32px] shadow-sm border border-slate-100 overflow-hidden flex flex-col group border-b-4 border-b-slate-200 hover:border-b-[#1b2e85] transition-all">
                   <div className="p-7 flex-1">
                     <div className="flex justify-between items-start mb-5">
@@ -444,64 +460,98 @@ const App: React.FC = () => {
                   <div className="bg-slate-50 p-5 grid grid-cols-3 gap-3 border-t border-slate-100">
                     <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo({ top: 0, left: 0 }); }} className="bg-white p-4 rounded-2xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm"><History size={20} /></button>
                     <button onClick={() => setPreviewOrder(item)} className="bg-white p-4 rounded-2xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm"><Download size={20} /></button>
-                    <button onClick={() => { if(window.confirm("Deseja realmente excluir esta OS?")) { supabase.from('orders').delete().match({id: item.id}).then(() => fetchInitialData()) } }} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20} /></button>
+                    <button onClick={() => { if(window.confirm("Deseja realmente excluir esta OS?")) { 
+                      const nextOrders = savedOrders.filter(o => o.id !== item.id);
+                      setSavedOrders(nextOrders);
+                      localStorage.setItem('md_diesel_orders_v2', JSON.stringify(nextOrders));
+                      supabase.from('orders').delete().match({id: item.id});
+                    }}} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20} /></button>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="col-span-full py-20 text-center bg-white rounded-3xl border border-dashed border-slate-300">
+                   <History size={48} className="mx-auto text-slate-200 mb-4" />
+                   <p className="font-black text-slate-400 uppercase tracking-widest text-xs">Nenhuma Ordem de Serviço encontrada.</p>
+                </div>
+              )}
             </div>
           </div>
         )}
 
         {activeTab === 'prices' && (
           <div className="space-y-6 animate-in fade-in duration-500 pb-12">
-            <div className="bg-[#1b2e85] p-8 rounded-3xl shadow-xl border-b-4 border-sky-500">
-               <div className="flex items-center justify-between mb-6">
-                 <h3 className="text-white font-black text-sm uppercase tracking-widest flex items-center gap-3"><PlusCircle size={20} /> Cadastrar no Catálogo</h3>
-                 {loading && <Loader2 className="animate-spin text-sky-400" size={24} />}
+            <div className="bg-[#1b2e85] p-6 sm:p-10 rounded-[40px] shadow-2xl border-b-8 border-sky-600">
+               <div className="flex items-center justify-between mb-8">
+                 <h3 className="text-white font-black text-lg uppercase tracking-widest flex items-center gap-4 italic">
+                    <PlusCircle size={24} className="text-sky-400" /> ADICIONAR AO CATÁLOGO
+                 </h3>
+                 <button onClick={fetchInitialData} className="p-3 hover:bg-white/10 rounded-full text-sky-400 transition-all border border-white/5 active:scale-90">
+                    <RefreshCw size={24} className={loading ? 'animate-spin' : ''} />
+                 </button>
                </div>
-               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
-                  <div className="sm:col-span-2">
-                    <label className="text-[10px] font-black text-sky-300 uppercase mb-1.5 block">Descrição do Serviço / Peça</label>
-                    <input type="text" value={newItemDesc} onChange={e => setNewItemDesc(e.target.value)} placeholder="Ex: TROCA DE TURBINA" className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 font-black text-white text-xs outline-none focus:bg-white/20 placeholder:text-white/30" />
+               <div className="flex flex-col sm:flex-row gap-6 items-end">
+                  <div className="flex-1 w-full">
+                    <label className="text-[10px] font-black text-sky-300 uppercase mb-2 block tracking-widest ml-1">DESCRIÇÃO DO SERVIÇO / PEÇA</label>
+                    <input 
+                      type="text" 
+                      value={newItemDesc} 
+                      onChange={e => setNewItemDesc(e.target.value)} 
+                      placeholder="EX: TROCA DE ÓLEO" 
+                      className="w-full bg-[#1e2a66] border-2 border-white/10 rounded-[20px] px-6 py-4 font-black text-white text-sm outline-none focus:border-sky-400 focus:bg-[#253585] transition-all placeholder:text-white/20 shadow-inner" 
+                    />
                   </div>
-                  <div>
-                    <label className="text-[10px] font-black text-sky-300 uppercase mb-1.5 block">Valor (R$)</label>
-                    <input type="number" value={newItemValue} onChange={e => setNewItemValue(Number(e.target.value))} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 font-black text-white text-xs outline-none focus:bg-white/20" />
+                  <div className="w-full sm:w-48">
+                    <label className="text-[10px] font-black text-sky-300 uppercase mb-2 block tracking-widest ml-1">VALOR (R$)</label>
+                    <input 
+                      type="text" 
+                      value={newItemValue} 
+                      onChange={e => setNewItemValue(e.target.value)} 
+                      placeholder="0,00"
+                      className="w-full bg-[#1e2a66] border-2 border-white/10 rounded-[20px] px-6 py-4 font-black text-white text-sm outline-none focus:border-sky-400 focus:bg-[#253585] transition-all shadow-inner" 
+                    />
                   </div>
-                  <button onClick={handleAddItemToCatalog} disabled={loading} className="bg-sky-400 hover:bg-sky-300 text-[#1b2e85] py-3.5 rounded-xl font-black text-xs uppercase shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50">
-                    <Plus size={18} /> {loading ? 'AGUARDE...' : 'SALVAR NO BANCO'}
+                  <button 
+                    onClick={handleAddItemToCatalog} 
+                    disabled={loading} 
+                    className="w-full sm:w-auto bg-[#38bdf8] hover:bg-sky-300 text-[#1b2e85] px-10 h-[60px] rounded-[22px] font-black text-sm uppercase shadow-[0_10px_20px_-5px_rgba(56,189,248,0.5)] transition-all flex items-center justify-center gap-3 disabled:opacity-50 active:scale-95 shrink-0 border-b-4 border-sky-600"
+                  >
+                    {loading ? <Loader2 size={22} className="animate-spin" /> : <Plus size={22} strokeWidth={3} />}
+                    {loading ? 'GRAVANDO...' : 'SALVAR NO BANCO'}
                   </button>
                </div>
             </div>
 
-            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-[40px] border border-slate-200 shadow-xl overflow-hidden mt-8">
                <table className="w-full text-left">
-                  <thead className="bg-slate-900 text-white">
+                  <thead className="bg-[#111827] text-white">
                     <tr>
-                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Serviço / Peça</th>
-                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Preço Sugerido</th>
-                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center w-32">Ações</th>
+                      <th className="px-8 py-6 text-[11px] font-black uppercase tracking-[0.2em]">Serviço / Peça</th>
+                      <th className="px-8 py-6 text-[11px] font-black uppercase tracking-[0.2em] text-right">Preço Sugerido</th>
+                      <th className="px-8 py-6 text-[11px] font-black uppercase tracking-[0.2em] text-center w-40">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {Object.entries(priceCatalog).length > 0 ? Object.entries(priceCatalog).map(([key, val]) => (
-                      <tr key={key} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-4 font-black text-slate-700 uppercase text-xs">{key}</td>
-                        <td className="px-6 py-4 text-right font-black text-[#1b2e85] italic text-base">R$ {formatCurrency(val as number)}</td>
-                        <td className="px-6 py-4 text-center">
+                    {Object.entries(priceCatalog).length > 0 ? Object.entries(priceCatalog).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => (
+                      <tr key={key} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
+                        <td className="px-8 py-6 font-black text-slate-700 uppercase text-sm tracking-tight">{key}</td>
+                        <td className="px-8 py-6 text-right font-black text-[#1b2e85] italic text-xl">R$ {formatCurrency(val as number)}</td>
+                        <td className="px-8 py-6 text-center">
                           <button 
                             onClick={(e) => { e.preventDefault(); handleRemoveFromCatalog(key); }} 
-                            disabled={loading}
-                            className="p-3 text-red-500 hover:bg-red-50 transition-all rounded-xl disabled:opacity-50 flex items-center justify-center mx-auto"
-                            title="Remover permanentemente"
+                            className="p-4 text-red-400 hover:text-red-600 hover:bg-red-50 transition-all rounded-2xl flex items-center justify-center mx-auto border border-transparent hover:border-red-100"
                           >
-                            <Trash2 size={20}/>
+                            <Trash2 size={24}/>
                           </button>
                         </td>
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan={3} className="px-6 py-12 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">Nenhum item sincronizado no banco de dados.</td>
+                        <td colSpan={3} className="px-8 py-20 text-center text-slate-400 font-black uppercase tracking-widest text-xs">
+                           <div className="flex flex-col items-center gap-4">
+                              <ClipboardList size={40} className="text-slate-200" />
+                              <p>Nenhum serviço cadastrado ainda. Use o formulário azul acima!</p>
+                           </div>
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -511,92 +561,98 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* PREVIEW PDF */}
+      {/* Preview PDF */}
       {previewOrder && (
-        <div className="fixed inset-0 bg-slate-900/90 z-[300] flex flex-col items-center p-4 overflow-y-auto no-print">
-            <div className="max-w-[210mm] w-full flex justify-between items-center mb-6 bg-white/10 p-4 rounded-2xl backdrop-blur-md">
-                <button onClick={() => setPreviewOrder(null)} className="text-white font-black text-xs uppercase flex items-center gap-2 hover:text-sky-400"><ArrowLeft size={18}/> FECHAR PREVIEW</button>
-                <button onClick={() => downloadPDF(previewOrder)} className="bg-sky-400 text-[#1b2e85] px-6 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 shadow-xl hover:bg-sky-300"><Printer size={18}/> IMPRIMIR / SALVAR PDF</button>
+        <div className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col items-center p-4 overflow-y-auto no-print backdrop-blur-sm">
+            <div className="max-w-[210mm] w-full flex justify-between items-center mb-6 bg-white/10 p-5 rounded-3xl backdrop-blur-xl border border-white/10 shadow-2xl">
+                <button onClick={() => setPreviewOrder(null)} className="text-white font-black text-xs uppercase flex items-center gap-3 hover:text-sky-400 transition-colors"><ArrowLeft size={20}/> VOLTAR AO APP</button>
+                <div className="flex gap-4">
+                  <button onClick={() => downloadPDF(previewOrder)} className="bg-emerald-500 text-white px-8 py-4 rounded-2xl font-black uppercase text-xs flex items-center gap-3 shadow-xl hover:bg-emerald-400 transition-all active:scale-95"><FileDown size={20}/> SALVAR PDF</button>
+                  <button onClick={() => window.print()} className="bg-sky-400 text-[#1b2e85] px-8 py-4 rounded-2xl font-black uppercase text-xs flex items-center gap-3 shadow-xl hover:bg-sky-300 transition-all active:scale-95"><Printer size={20}/> IMPRIMIR</button>
+                </div>
             </div>
-            
-            <div id="pdf-content-to-print" className="bg-white w-[210mm] min-h-[297mm] p-[15mm] text-slate-800 shadow-2xl relative flex flex-col">
-                <div className="border-b-[5px] border-[#1b2e85] pb-6 mb-8 flex justify-between items-end">
+            <div id="pdf-content-to-print" className="bg-white w-[210mm] min-h-[297mm] p-[20mm] text-slate-800 shadow-2xl relative flex flex-col mx-auto mb-20 rounded-sm">
+                <div className="border-b-[6px] border-[#1b2e85] pb-8 mb-10 flex justify-between items-end">
                    <div>
-                      <h2 className="text-4xl font-black text-[#1b2e85] italic leading-none">{previewOrder?.company?.name || 'MD DIESEL'}</h2>
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-2">GESTÃO DE MANUTENÇÃO - MECÂNICA PESADA</p>
+                      <h2 className="text-5xl font-black text-[#1b2e85] italic leading-none tracking-tighter">{previewOrder?.company?.name || 'MD DIESEL'}</h2>
+                      <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] mt-3">GESTÃO DE MANUTENÇÃO - MECÂNICA PESADA</p>
                    </div>
                    <div className="text-right">
-                      <div className="bg-[#1b2e85] text-white px-6 py-2 rounded-xl font-black text-2xl italic">OS: {previewOrder?.id}</div>
-                      <p className="mt-2 font-black text-slate-400 text-[10px]">DATA: {previewOrder?.date}</p>
+                      <div className="bg-[#1b2e85] text-white px-8 py-3 rounded-2xl font-black text-3xl italic shadow-lg">OS: {previewOrder?.id}</div>
+                      <p className="mt-3 font-black text-slate-500 text-[11px] uppercase">EMISSÃO: {previewOrder?.date}</p>
+                   </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-6 mb-10">
+                   <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
+                      <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-3 tracking-widest border-b border-slate-200 pb-2">DADOS DO CLIENTE</h4>
+                      <p className="text-sm font-black uppercase mb-1">{previewOrder?.client?.name || 'CONSUMIDOR FINAL'}</p>
+                      <p className="text-[11px] text-slate-500 font-bold uppercase">DOC: {previewOrder?.client?.idNumber || '---'}</p>
+                   </div>
+                   <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
+                      <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-3 tracking-widest border-b border-slate-200 pb-2">TÉCNICO RESPONSÁVEL</h4>
+                      <p className="text-sm font-black uppercase mb-1">{previewOrder?.mechanic?.name || 'MD DIESEL'}</p>
+                      <p className="text-[11px] text-slate-500 font-bold uppercase">CNPJ: {previewOrder?.mechanic?.idNumber || '---'}</p>
                    </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 mb-8">
-                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                      <h4 className="text-[8px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest">DADOS DO CLIENTE</h4>
-                      <p className="text-xs font-black uppercase">{previewOrder?.client?.name || '---'}</p>
-                      <p className="text-[10px] text-slate-500 uppercase">DOC: {previewOrder?.client?.idNumber || '---'}</p>
-                   </div>
-                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                      <h4 className="text-[8px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest">RESPONSÁVEL TÉCNICO</h4>
-                      <p className="text-xs font-black uppercase">{previewOrder?.mechanic?.name || '---'}</p>
-                      <p className="text-[10px] text-slate-500 uppercase">DOC: {previewOrder?.mechanic?.idNumber || '---'}</p>
+                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200 mb-10">
+                   <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-3 tracking-widest border-b border-slate-200 pb-2">VEÍCULO E DIAGNÓSTICO</h4>
+                   <div className="grid grid-cols-3 gap-4">
+                      <div><p className="text-[10px] text-slate-400 font-black uppercase">PLACA</p><p className="text-sm font-black uppercase">{previewOrder?.vehicle?.plate || '---'}</p></div>
+                      <div><p className="text-[10px] text-slate-400 font-black uppercase">MARCA/MODELO</p><p className="text-sm font-black uppercase">{previewOrder?.vehicle?.brand || '---'}</p></div>
+                      <div><p className="text-[10px] text-slate-400 font-black uppercase">KM / HORAS</p><p className="text-sm font-black uppercase">{previewOrder?.vehicle?.mileage || '---'}</p></div>
                    </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 mb-8">
-                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                      <h4 className="text-[8px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest">VEÍCULO</h4>
-                      <p className="text-xs font-black uppercase">PLACA: {previewOrder?.vehicle?.plate || '---'} | MODELO: {previewOrder?.vehicle?.brand || '---'}</p>
-                      <p className="text-[10px] text-slate-500">KM / HORAS: {previewOrder?.vehicle?.mileage || '---'}</p>
-                   </div>
-                </div>
-
-                <div className="border border-slate-200 rounded-xl mb-8 overflow-hidden flex-1">
-                   <table className="w-full text-left">
-                      <thead className="bg-slate-100 border-b border-slate-200">
-                        <tr><th className="px-4 py-3 text-[9px] font-black uppercase tracking-widest">DESCRIÇÃO DOS SERVIÇOS</th><th className="px-4 py-3 text-[9px] font-black uppercase text-right w-32">VALOR REF.</th></tr>
+                <div className="border border-slate-200 rounded-3xl mb-10 overflow-hidden flex-1 shadow-sm">
+                   <table className="w-full text-left border-collapse">
+                      <thead className="bg-[#f8fafc] border-b border-slate-200">
+                        <tr>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">DESCRIÇÃO DOS SERVIÇOS EXECUTADOS</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right text-slate-500 w-40">VALOR (R$)</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {(previewOrder?.serviceItems || []).map((item: ServiceItem, i: number) => (
-                          <tr key={i} className="border-t border-slate-50">
-                            <td className="px-4 py-2.5 text-xs uppercase font-medium">{item?.description || '---'}</td>
-                            <td className="px-4 py-2.5 text-xs text-right font-bold">R$ {formatCurrency(item?.value)}</td>
+                          <tr key={i} className="border-t border-slate-100">
+                            <td className="px-6 py-4 text-xs uppercase font-black text-slate-700">{item?.description || 'SERVIÇO NÃO DESCRITO'}</td>
+                            <td className="px-6 py-4 text-sm text-right font-black text-[#1b2e85] italic">R$ {formatCurrency(item?.value)}</td>
                           </tr>
                         ))}
                       </tbody>
                    </table>
                 </div>
 
-                <div className="grid grid-cols-2 gap-8 items-end mb-12">
-                   <div className="bg-slate-900 text-white p-5 rounded-2xl border-l-4 border-sky-400">
-                      <p className="text-[7px] font-black text-sky-400 uppercase mb-1 tracking-widest">PAGAMENTO</p>
-                      <p className="text-sm font-black uppercase italic">{previewOrder?.paymentMethod || 'Pix'}</p>
+                <div className="grid grid-cols-2 gap-10 items-end mb-16">
+                   <div className="bg-slate-900 text-white p-6 rounded-3xl border-l-8 border-sky-400 shadow-xl">
+                      <p className="text-[8px] font-black text-sky-400 uppercase mb-2 tracking-[0.4em]">MÉTODO DE PAGAMENTO</p>
+                      <p className="text-lg font-black uppercase italic tracking-wider">{previewOrder?.paymentMethod || 'PIX'}</p>
                    </div>
-                   <div className="border-2 border-[#1b2e85] rounded-2xl overflow-hidden">
-                      <div className="px-4 py-2 flex justify-between bg-slate-50 border-b border-slate-100 text-[9px] font-bold">
-                         <span className="text-slate-400 uppercase">MÃO DE OBRA</span>
+                   <div className="border-2 border-[#1b2e85] rounded-[32px] overflow-hidden shadow-lg bg-white">
+                      <div className="px-6 py-3 flex justify-between bg-slate-50 border-b border-slate-100 text-[10px] font-black">
+                         <span className="text-slate-400 uppercase tracking-widest">MÃO DE OBRA</span>
                          <span className="text-[#1b2e85]">R$ {formatCurrency(previewOrder?.values?.labor || 0)}</span>
                       </div>
-                      <div className="px-4 py-2 flex justify-between bg-slate-50 border-b border-slate-100 text-[9px] font-bold">
-                         <span className="text-slate-400 uppercase">DESLOCAMENTO</span>
+                      <div className="px-6 py-3 flex justify-between bg-slate-50 border-b border-slate-100 text-[10px] font-black">
+                         <span className="text-slate-400 uppercase tracking-widest">DESLOCAMENTO</span>
                          <span className="text-[#1b2e85]">R$ {formatCurrency(previewOrder?.values?.travel || 0)}</span>
                       </div>
-                      <div className="p-4 bg-[#1b2e85] text-white flex justify-between items-center">
-                         <span className="font-black text-[10px] uppercase">VALOR TOTAL</span>
-                         <span className="text-3xl font-black italic">R$ {formatCurrency(calculateTotal(previewOrder as ServiceOrder))}</span>
+                      <div className="p-6 bg-[#1b2e85] text-white flex justify-between items-center">
+                         <span className="font-black text-xs uppercase tracking-[0.2em]">TOTAL GERAL</span>
+                         <span className="text-4xl font-black italic tracking-tighter">R$ {formatCurrency(calculateTotal(previewOrder as ServiceOrder))}</span>
                       </div>
                    </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-16 border-t border-slate-200 pt-6 text-center mt-auto">
-                   <div>
-                      <div className="h-0.5 w-full bg-slate-300 mb-2"></div>
-                      <p className="font-black text-[8px] text-slate-400 uppercase tracking-widest">ASSINATURA CLIENTE</p>
+                <div className="grid grid-cols-2 gap-20 border-t-2 border-slate-100 pt-10 text-center mt-auto">
+                   <div className="flex flex-col items-center">
+                      <div className="h-0.5 w-full max-w-[200px] bg-slate-300 mb-3"></div>
+                      <p className="font-black text-[9px] text-slate-400 uppercase tracking-[0.3em]">ASSINATURA DO CLIENTE</p>
                    </div>
-                   <div>
-                      <div className="h-0.5 w-full bg-slate-300 mb-2"></div>
-                      <p className="font-black text-[8px] text-slate-400 uppercase tracking-widest">MECÂNICO RESPONSÁVEL</p>
+                   <div className="flex flex-col items-center">
+                      <div className="h-0.5 w-full max-w-[200px] bg-slate-300 mb-3"></div>
+                      <p className="font-black text-[9px] text-slate-400 uppercase tracking-[0.3em]">MECÂNICO RESPONSÁVEL</p>
                    </div>
                 </div>
             </div>
@@ -604,7 +660,7 @@ const App: React.FC = () => {
       )}
       
       <footer className="py-12 bg-white border-t border-slate-200 mt-auto text-center">
-        <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.6em] italic">MD DIESEL • GESTÃO DE MANUTENÇÃO PESADA</p>
+        <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.6em] italic">MD DIESEL • SISTEMA DE GESTÃO PROFISSIONAL</p>
       </footer>
     </div>
   );
