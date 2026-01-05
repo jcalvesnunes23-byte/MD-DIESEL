@@ -63,7 +63,6 @@ const App: React.FC = () => {
     if (!err) return "Erro desconhecido";
     if (typeof err === 'string') return err;
     
-    // Captura erro específico de tabela inexistente
     if (err.code === 'PGRST205') {
       return "Banco de Dados não configurado: A tabela necessária não existe no Supabase.";
     }
@@ -104,21 +103,16 @@ const App: React.FC = () => {
     try { return JSON.parse(val); } catch { return {}; }
   };
 
-  /**
-   * CARREGAMENTO BLINDADO: Tenta Supabase, mas prioriza LocalStorage para não "sumir" com nada
-   */
   const fetchInitialData = async () => {
     setLoading(true);
     setDbError(null);
     try {
-      // 1. Carregar do LocalStorage primeiro (Garante que nada suma)
       const localOrders = localStorage.getItem('md_diesel_orders_v2');
       const localCatalog = localStorage.getItem('md_diesel_catalog_v2');
       
       if (localOrders) setSavedOrders(JSON.parse(localOrders));
       if (localCatalog) setPriceCatalog(JSON.parse(localCatalog));
 
-      // 2. Tenta Sincronizar com Supabase
       const { data: catalogData, error: catalogError } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
       if (catalogError) {
         if (catalogError.code === 'PGRST205') setDbError("Tabelas ausentes no Supabase. Usando modo Local.");
@@ -143,9 +137,6 @@ const App: React.FC = () => {
     }
   };
 
-  /**
-   * SALVAMENTO NA TABELA (CORRIGIDO E PERSISTENTE)
-   */
   const handleAddItemToCatalog = async () => {
     const desc = newItemDesc.trim().toUpperCase();
     const cleanValue = newItemValue.toString().replace('R$', '').replace(/\s/g, '').replace(/\./g, '').replace(',', '.');
@@ -158,19 +149,17 @@ const App: React.FC = () => {
     
     setLoading(true);
     try {
-      // 1. Atualiza Localmente Imediatamente
       const updatedCatalog = { ...priceCatalog, [desc]: valueNum };
       setPriceCatalog(updatedCatalog);
       localStorage.setItem('md_diesel_catalog_v2', JSON.stringify(updatedCatalog));
 
-      // 2. Tenta salvar no Supabase
       const { error: saveError } = await supabase.from('settings').upsert({ id: 'price_catalog', value: updatedCatalog }, { onConflict: 'id' });
       
       if (saveError) {
         console.warn("Falha no backup online:", getErrorMessage(saveError));
-        alert("✅ Salvo no computador!\n(Ocorreu um erro ao enviar para a nuvem, mas seus dados estão seguros aqui).");
+        alert("✅ Salvo no computador!");
       } else {
-        alert(`✅ "${desc}" salvo com sucesso no catálogo!`);
+        alert(`✅ "${desc}" salvo no catálogo!`);
       }
 
       setNewItemDesc('');
@@ -197,12 +186,16 @@ const App: React.FC = () => {
     setLoading(false);
   };
 
+  /**
+   * LÓGICA DE CÁLCULO ATUALIZADA:
+   * Soma apenas Mão de Obra e Deslocamento.
+   */
   const calculateTotal = (targetOrder: ServiceOrder): number => {
     if (!targetOrder) return 0;
     const labor = targetOrder.values?.labor || 0;
     const travel = targetOrder.values?.travel || 0;
-    const itemsTotal = (targetOrder.serviceItems || []).reduce((acc, item) => acc + (item.value || 0), 0);
-    return labor + travel + itemsTotal;
+    // Removido itemsTotal da somatória final conforme solicitado
+    return labor + travel;
   };
 
   const getNextNumericId = (orders: ServiceOrder[]) => {
@@ -242,12 +235,10 @@ const App: React.FC = () => {
     }
     setLoading(true);
     try {
-      // 1. Salva Local
       const newOrders = [order, ...savedOrders.filter(o => o.id !== order.id)];
       setSavedOrders(newOrders);
       localStorage.setItem('md_diesel_orders_v2', JSON.stringify(newOrders));
 
-      // 2. Tenta Supabase
       const { error } = await supabase.from('orders').upsert({
         id: order.id,
         client_name: order.client.name,
@@ -309,7 +300,7 @@ const App: React.FC = () => {
         <div className="mt-[140px] lg:mt-[95px] mx-auto max-w-5xl w-full px-6">
           <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-xl flex items-center gap-3">
             <AlertTriangle className="text-amber-500" size={20} />
-            <p className="text-amber-800 text-xs font-bold uppercase tracking-tight">Modo Local Ativado: O banco de dados Supabase não foi configurado corretamente (tabelas ausentes).</p>
+            <p className="text-amber-800 text-xs font-bold uppercase tracking-tight">Modo Local Ativado.</p>
           </div>
         </div>
       )}
@@ -366,7 +357,7 @@ const App: React.FC = () => {
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                  <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                     <DollarSign size={18} className="text-[#1b2e85]" />
-                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Valores Fixos</h3>
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Valores Fixos (Apenas estes somam)</h3>
                  </div>
                  <div className="grid grid-cols-2 gap-4">
                     <Input label="Mão de Obra (R$)" type="number" value={order.values?.labor || 0} onChange={e => setOrder({...order, values: {...order.values, labor: Number(e.target.value)}})} />
@@ -384,7 +375,7 @@ const App: React.FC = () => {
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                   <div className="flex items-center gap-2">
                     <ClipboardList size={18} className="text-[#1b2e85]" />
-                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Descrição Técnica dos Serviços</h3>
+                    <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Descrição Técnica (Informativo)</h3>
                   </div>
                   <button onClick={() => setOrder({...order, serviceItems: [...(order.serviceItems || []), { description: '', value: 0 }]})} className="bg-[#1b2e85] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-sky-600 transition-all flex items-center gap-2">
                     <Plus size={14} /> Adicionar Linha
@@ -410,7 +401,15 @@ const App: React.FC = () => {
                           }} 
                         />
                       </div>
-                      <div className="w-32"><Input label={index === 0 ? "Valor (R$)" : ""} type="number" value={item.value} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, value: Number(e.target.value)} : it)})} /></div>
+                      <div className="w-32">
+                        <Input 
+                          label={index === 0 ? "Valor Ref. (R$)" : ""} 
+                          type="number" 
+                          value={item.value} 
+                          onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, value: Number(e.target.value)} : it)})} 
+                        />
+                        <span className="text-[8px] text-slate-400 font-bold uppercase block text-center mt-1">Não soma no total</span>
+                      </div>
                       <button onClick={() => { const ni = [...(order.serviceItems || [])]; ni.splice(index, 1); setOrder({...order, serviceItems: ni})}} className="p-3 text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash size={18}/></button>
                     </div>
                   ))}
@@ -419,7 +418,7 @@ const App: React.FC = () => {
 
               <section className="md:col-span-2 bg-[#1b2e85] rounded-[30px] p-8 flex flex-col justify-center items-center text-center shadow-xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-10"><DollarSign size={80} className="text-white"/></div>
-                <span className="text-sky-300 text-[10px] font-black uppercase mb-2 tracking-widest">TOTAL FINAL DA ORDEM</span>
+                <span className="text-sky-300 text-[10px] font-black uppercase mb-2 tracking-widest">TOTAL FINAL (FIXOS)</span>
                 <div className="text-6xl font-black text-white italic drop-shadow-xl">R$ {formatCurrency(calculateTotal(order))}</div>
               </section>
             </div>
@@ -561,7 +560,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Preview PDF */}
       {previewOrder && (
         <div className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col items-center p-4 overflow-y-auto no-print backdrop-blur-sm">
             <div className="max-w-[210mm] w-full flex justify-between items-center mb-6 bg-white/10 p-5 rounded-3xl backdrop-blur-xl border border-white/10 shadow-2xl">
@@ -610,14 +608,14 @@ const App: React.FC = () => {
                       <thead className="bg-[#f8fafc] border-b border-slate-200">
                         <tr>
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">DESCRIÇÃO DOS SERVIÇOS EXECUTADOS</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right text-slate-500 w-40">VALOR (R$)</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right text-slate-500 w-40">VALOR REF. (R$)</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(previewOrder?.serviceItems || []).map((item: ServiceItem, i: number) => (
                           <tr key={i} className="border-t border-slate-100">
                             <td className="px-6 py-4 text-xs uppercase font-black text-slate-700">{item?.description || 'SERVIÇO NÃO DESCRITO'}</td>
-                            <td className="px-6 py-4 text-sm text-right font-black text-[#1b2e85] italic">R$ {formatCurrency(item?.value)}</td>
+                            <td className="px-6 py-4 text-sm text-right font-black text-slate-300 italic">R$ {formatCurrency(item?.value)}</td>
                           </tr>
                         ))}
                       </tbody>
