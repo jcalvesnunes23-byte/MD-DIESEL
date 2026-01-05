@@ -23,9 +23,18 @@ import { createClient } from '@supabase/supabase-js';
 import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
 import Input from './components/Input';
 
-// Fallbacks para garantir o funcionamento caso as env vars do Vercel não estejam presentes no preview
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zozuufcvskbmdsppexsy.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo';
+// Utilitário para pegar variáveis de ambiente de forma segura no browser
+const getEnv = (name: string, fallback: string) => {
+  try {
+    // @ts-ignore
+    return (typeof process !== 'undefined' && process.env && process.env[name]) || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const SUPABASE_URL = getEnv('SUPABASE_URL', 'https://zozuufcvskbmdsppexsy.supabase.co');
+const SUPABASE_ANON_KEY = getEnv('SUPABASE_ANON_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvenV1ZmN2c2tibWRzcHBleHN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcyMDQxNTIsImV4cCI6MjA4Mjc4MDE1Mn0.HZDeCp7ydx4AF_TirhdBoNxZ62xpDkUmzBFBz2JyEvo');
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -42,6 +51,7 @@ const App: React.FC = () => {
   const [showSplash, setShowSplash] = useState(false);
   const [isSplashClosing, setIsSplashClosing] = useState(false);
 
+  // O catálogo agora é uma lista de objetos vindos da tabela 'catalog'
   const [priceCatalog, setPriceCatalog] = useState<Record<string, number>>({});
   
   const [newItemDesc, setNewItemDesc] = useState('');
@@ -58,28 +68,10 @@ const App: React.FC = () => {
     return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val || 0);
   };
 
-  /**
-   * Extrator de erro ultra-robusto para evitar [object Object]
-   */
   const getErrorMessage = (err: any): string => {
     if (!err) return "Erro desconhecido";
     if (typeof err === 'string') return err;
-    
-    if (err.message && typeof err.message === 'string') {
-      let details = "";
-      if (err.details) details = ` - ${err.details}`;
-      if (err.hint) details += ` (Dica: ${err.hint})`;
-      return `${err.message}${details}`;
-    }
-
-    if (err.error) return getErrorMessage(err.error);
-
-    try {
-      const result = JSON.stringify(err);
-      return result === '{}' ? String(err) : result;
-    } catch {
-      return String(err);
-    }
+    return err.message || JSON.stringify(err);
   };
 
   useEffect(() => {
@@ -97,34 +89,33 @@ const App: React.FC = () => {
   }, [loading]);
 
   useEffect(() => { 
-    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-      fetchInitialData(); 
-    } else {
-      console.error("Configurações do Supabase ausentes. Verifique as variáveis de ambiente.");
-    }
+    fetchInitialData(); 
   }, []);
 
   const fetchInitialData = async () => {
     setLoading(true);
     try {
+      // 1. Perfil da Empresa
       const { data: profileData } = await supabase.from('settings').select('value').eq('id', 'company_profile').maybeSingle();
       if (profileData?.value) setCompanyProfile(prev => ({ ...prev, ...(profileData.value as any) }));
 
-      try {
-        const { data: catalogData } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
-        if (catalogData?.value) {
-          const cat = catalogData.value as Record<string, number>;
-          setPriceCatalog(cat || {});
-          localStorage.setItem('md_diesel_catalog', JSON.stringify(cat || {}));
-        } else {
-          const localCat = localStorage.getItem('md_diesel_catalog');
-          if (localCat) setPriceCatalog(JSON.parse(localCat) || {});
-        }
-      } catch (e) {
-        const localCat = localStorage.getItem('md_diesel_catalog');
-        if (localCat) setPriceCatalog(JSON.parse(localCat) || {});
+      // 2. Catálogo de Preços (Tabela dedicada 'catalog')
+      const { data: catalogData, error: catalogError } = await supabase.from('catalog').select('description, price');
+      
+      if (catalogError) {
+        console.warn("Tabela 'catalog' não encontrada ou erro, tentando 'settings' como fallback...", catalogError);
+        // Fallback para o modo antigo caso a tabela nova ainda não exista
+        const { data: oldCatalog } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
+        if (oldCatalog?.value) setPriceCatalog(oldCatalog.value as Record<string, number>);
+      } else if (catalogData) {
+        const catMap = catalogData.reduce((acc, curr) => {
+          acc[curr.description] = curr.price;
+          return acc;
+        }, {} as Record<string, number>);
+        setPriceCatalog(catMap);
       }
 
+      // 3. Ordens de Serviço
       const { data: ordersData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
       if (ordersData) {
         setSavedOrders(ordersData.map(item => item.content as ServiceOrder));
@@ -142,24 +133,33 @@ const App: React.FC = () => {
     }
     
     setLoading(true);
-    const updatedCatalog = { ...priceCatalog, [desc]: newItemValue };
 
     try {
-      setPriceCatalog(updatedCatalog);
-      localStorage.setItem('md_diesel_catalog', JSON.stringify(updatedCatalog));
-      
-      const { error } = await supabase.from('settings').upsert(
-        [{ id: 'price_catalog', value: updatedCatalog }],
-        { onConflict: 'id' }
+      // Tentamos salvar na tabela dedicada 'catalog'
+      const { error } = await supabase.from('catalog').upsert(
+        { description: desc, price: newItemValue },
+        { onConflict: 'description' }
       );
       
-      if (error) throw error;
+      if (error) {
+        // Fallback: se 'catalog' falhar, tenta salvar no 'settings' (formato antigo)
+        const updatedCatalog = { ...priceCatalog, [desc]: newItemValue };
+        const { error: fallbackError } = await supabase.from('settings').upsert(
+          [{ id: 'price_catalog', value: updatedCatalog }],
+          { onConflict: 'id' }
+        );
+        if (fallbackError) throw fallbackError;
+        setPriceCatalog(updatedCatalog);
+      } else {
+        // Sucesso na tabela nova
+        setPriceCatalog(prev => ({ ...prev, [desc]: newItemValue }));
+      }
       
       setNewItemDesc('');
       setNewItemValue(0);
-      alert("Item cadastrado!");
+      alert("Item salvo com sucesso!");
     } catch (err) {
-      alert("Erro ao sincronizar catálogo: " + getErrorMessage(err));
+      alert("Erro ao salvar no banco de dados: " + getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -169,37 +169,35 @@ const App: React.FC = () => {
     if (!window.confirm(`Deseja excluir permanentemente o item "${keyToRemove}"?`)) return;
     
     setLoading(true);
-    
-    const nextCatalog = Object.keys(priceCatalog)
-      .filter(key => key !== keyToRemove)
-      .reduce((acc, key) => {
-        acc[key] = priceCatalog[key];
-        return acc;
-      }, {} as Record<string, number>);
 
     try {
-      setPriceCatalog(nextCatalog);
-      localStorage.setItem('md_diesel_catalog', JSON.stringify(nextCatalog));
+      // 1. Tenta deletar da tabela dedicada
+      const { error } = await supabase.from('catalog').delete().eq('description', keyToRemove);
       
-      const { error } = await supabase.from('settings').upsert(
-        [{ id: 'price_catalog', value: nextCatalog }],
-        { onConflict: 'id' }
-      );
-      
-      if (error) throw error;
-      
+      if (error) {
+        // Fallback para o modo antigo
+        const nextCatalog = { ...priceCatalog };
+        delete nextCatalog[keyToRemove];
+        const { error: fallbackError } = await supabase.from('settings').upsert(
+          [{ id: 'price_catalog', value: nextCatalog }],
+          { onConflict: 'id' }
+        );
+        if (fallbackError) throw fallbackError;
+        setPriceCatalog(nextCatalog);
+      } else {
+        setPriceCatalog(prev => {
+          const next = { ...prev };
+          delete next[keyToRemove];
+          return next;
+        });
+      }
     } catch (err) {
-      console.error("Erro de sincronização:", err);
-      alert("Erro ao sincronizar exclusão com o servidor: " + getErrorMessage(err));
+      alert("Erro ao excluir: " + getErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
-  /**
-   * Calcula o total considerando apenas Mão de Obra e Deslocamento.
-   * Os itens da descrição técnica são apenas informativos.
-   */
   const calculateTotal = (targetOrder: ServiceOrder): number => {
     if (!targetOrder) return 0;
     const labor = targetOrder.values?.labor || 0;
@@ -256,7 +254,7 @@ const App: React.FC = () => {
       alert("OS Salva!");
       setActiveTab('list');
     } catch(err) {
-      alert("Erro ao gravar: " + getErrorMessage(err));
+      alert("Erro ao gravar OS: " + getErrorMessage(err));
     } finally { setLoading(false); }
   };
 
@@ -379,7 +377,24 @@ const App: React.FC = () => {
                 <div className="space-y-3">
                   {(order.serviceItems || []).map((item, index) => (
                     <div key={index} className="flex gap-3 items-end group">
-                      <div className="flex-1"><Input label={index === 0 ? "Descrição do Serviço" : ""} value={item.description} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, description: e.target.value} : it)})} /></div>
+                      <div className="flex-1">
+                        <Input 
+                          label={index === 0 ? "Descrição do Serviço" : ""} 
+                          value={item.description} 
+                          onChange={e => {
+                            const val = e.target.value;
+                            const newItems = (order.serviceItems || []).map((it, i) => {
+                              if (i === index) {
+                                // Tenta auto-completar preço se existir no catálogo
+                                const suggestedPrice = priceCatalog[val.trim().toUpperCase()];
+                                return { ...it, description: val, value: suggestedPrice || it.value };
+                              }
+                              return it;
+                            });
+                            setOrder({...order, serviceItems: newItems});
+                          }} 
+                        />
+                      </div>
                       <div className="w-32"><Input label={index === 0 ? "Valor Ref. (R$)" : ""} type="number" value={item.value} onChange={e => setOrder({...order, serviceItems: (order.serviceItems || []).map((it, i) => i === index ? {...it, value: Number(e.target.value)} : it)})} /></div>
                       <button onClick={() => { const ni = [...(order.serviceItems || [])]; ni.splice(index, 1); setOrder({...order, serviceItems: ni})}} className="p-3 text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Trash size={18}/></button>
                     </div>
@@ -454,7 +469,7 @@ const App: React.FC = () => {
                     <input type="number" value={newItemValue} onChange={e => setNewItemValue(Number(e.target.value))} className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 font-black text-white text-xs outline-none focus:bg-white/20" />
                   </div>
                   <button onClick={handleAddItemToCatalog} disabled={loading} className="bg-sky-400 hover:bg-sky-300 text-[#1b2e85] py-3.5 rounded-xl font-black text-xs uppercase shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50">
-                    <Plus size={18} /> {loading ? 'AGUARDE...' : 'CADASTRAR'}
+                    <Plus size={18} /> {loading ? 'AGUARDE...' : 'SALVAR NO BANCO'}
                   </button>
                </div>
             </div>
@@ -469,7 +484,7 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {priceCatalog && Object.entries(priceCatalog).length > 0 ? Object.entries(priceCatalog).map(([key, val]) => (
+                    {Object.entries(priceCatalog).length > 0 ? Object.entries(priceCatalog).map(([key, val]) => (
                       <tr key={key} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
                         <td className="px-6 py-4 font-black text-slate-700 uppercase text-xs">{key}</td>
                         <td className="px-6 py-4 text-right font-black text-[#1b2e85] italic text-base">R$ {formatCurrency(val as number)}</td>
@@ -486,7 +501,7 @@ const App: React.FC = () => {
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan={3} className="px-6 py-12 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">O catálogo está vazio.</td>
+                        <td colSpan={3} className="px-6 py-12 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">Nenhum item sincronizado no banco de dados.</td>
                       </tr>
                     )}
                   </tbody>
