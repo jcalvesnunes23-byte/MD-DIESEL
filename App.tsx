@@ -19,7 +19,7 @@ import {
   PlusCircle,
   ShieldCheck,
   RefreshCw,
-  AlertTriangle
+  X
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
@@ -37,9 +37,9 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'form' | 'list' | 'prices'>('form');
   const [savedOrders, setSavedOrders] = useState<ServiceOrder[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [priceSearchTerm, setPriceSearchTerm] = useState(''); 
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
-  const [dbError, setDbError] = useState<string | null>(null);
   
   const [showSplash, setShowSplash] = useState(false);
   const [isSplashClosing, setIsSplashClosing] = useState(false);
@@ -62,16 +62,9 @@ const App: React.FC = () => {
   const getErrorMessage = (err: any): string => {
     if (!err) return "Erro desconhecido";
     if (typeof err === 'string') return err;
-    
-    if (err.code === 'PGRST205') {
-      return "Banco de Dados não configurado: A tabela necessária não existe no Supabase.";
-    }
-
     const msg = err.message || err.error_description || (err.error && err.error.message);
     const details = err.details || "";
-    
     if (msg) return `${msg} ${details ? `(${details})` : ""}`;
-    
     try {
       return JSON.stringify(err);
     } catch {
@@ -105,7 +98,6 @@ const App: React.FC = () => {
 
   const fetchInitialData = async () => {
     setLoading(true);
-    setDbError(null);
     try {
       const localOrders = localStorage.getItem('md_diesel_orders_v2');
       const localCatalog = localStorage.getItem('md_diesel_catalog_v2');
@@ -114,10 +106,7 @@ const App: React.FC = () => {
       if (localCatalog) setPriceCatalog(JSON.parse(localCatalog));
 
       const { data: catalogData, error: catalogError } = await supabase.from('settings').select('value').eq('id', 'price_catalog').maybeSingle();
-      if (catalogError) {
-        if (catalogError.code === 'PGRST205') setDbError("Tabelas ausentes no Supabase. Usando modo Local.");
-        else console.warn("Erro Supabase Catálogo:", getErrorMessage(catalogError));
-      } else if (catalogData?.value) {
+      if (!catalogError && catalogData?.value) {
         const remoteCatalog = parseJsonValue(catalogData.value);
         setPriceCatalog(remoteCatalog);
         localStorage.setItem('md_diesel_catalog_v2', JSON.stringify(remoteCatalog));
@@ -186,15 +175,10 @@ const App: React.FC = () => {
     setLoading(false);
   };
 
-  /**
-   * LÓGICA DE CÁLCULO ATUALIZADA:
-   * Soma apenas Mão de Obra e Deslocamento.
-   */
   const calculateTotal = (targetOrder: ServiceOrder): number => {
     if (!targetOrder) return 0;
     const labor = targetOrder.values?.labor || 0;
     const travel = targetOrder.values?.travel || 0;
-    // Removido itemsTotal da somatória final conforme solicitado
     return labor + travel;
   };
 
@@ -280,6 +264,13 @@ const App: React.FC = () => {
     });
   }, [savedOrders, searchTerm]);
 
+  const filteredCatalog = useMemo(() => {
+    const search = priceSearchTerm.toLowerCase().trim();
+    return Object.entries(priceCatalog)
+      .filter(([key]) => key.toLowerCase().includes(search))
+      .sort(([a], [b]) => a.localeCompare(b));
+  }, [priceCatalog, priceSearchTerm]);
+
   return (
     <div className="min-h-screen flex flex-col text-slate-900 bg-[#f1f5f9] overflow-x-hidden">
       <header className="fixed top-0 left-0 right-0 h-[135px] lg:h-[90px] bg-[#1b2e85] text-white shadow-2xl z-[100] border-b-4 border-sky-500 flex items-center">
@@ -291,21 +282,12 @@ const App: React.FC = () => {
           <nav className="flex bg-white/10 p-1 rounded-xl backdrop-blur-md border border-white/20">
             <button onClick={() => { setOrder(createInitialOrder(savedOrders, companyProfile)); setActiveTab('form'); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'form' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>NOVA OS</button>
             <button onClick={() => { setActiveTab('list'); setSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>HISTÓRICO</button>
-            <button onClick={() => { setActiveTab('prices'); setSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'prices' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>TABELA</button>
+            <button onClick={() => { setActiveTab('prices'); setPriceSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'prices' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>TABELA</button>
           </nav>
         </div>
       </header>
 
-      {dbError && (
-        <div className="mt-[140px] lg:mt-[95px] mx-auto max-w-5xl w-full px-6">
-          <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-xl flex items-center gap-3">
-            <AlertTriangle className="text-amber-500" size={20} />
-            <p className="text-amber-800 text-xs font-bold uppercase tracking-tight">Modo Local Ativado.</p>
-          </div>
-        </div>
-      )}
-
-      <main className={`max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 ${dbError ? 'mt-4' : 'mt-[150px] lg:mt-[110px]'}`}>
+      <main className="max-w-5xl mx-auto w-full p-4 sm:p-6 flex-1 mt-[150px] lg:mt-[110px]">
         {showSplash && (
           <div className={`fixed inset-0 bg-[#1b2e85] z-[200] flex flex-col items-center justify-center transition-all duration-500 ${isSplashClosing ? 'animate-splash-out' : 'animate-splash-in'}`}>
             <h2 className="text-5xl sm:text-8xl font-black text-white italic tracking-tighter text-glow uppercase animate-pulse">MD Diesel</h2>
@@ -520,7 +502,33 @@ const App: React.FC = () => {
                </div>
             </div>
 
-            <div className="bg-white rounded-[40px] border border-slate-200 shadow-xl overflow-hidden mt-8">
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+               <div className="flex items-center gap-3">
+                 <div className="bg-sky-50 p-2.5 rounded-xl text-[#1b2e85]">
+                   <Search size={20} />
+                 </div>
+                 <div>
+                   <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-widest">Consultar Tabela</h4>
+                   <p className="text-[9px] text-slate-400 font-bold uppercase">{filteredCatalog.length} itens encontrados</p>
+                 </div>
+               </div>
+               <div className="relative w-full sm:w-96">
+                 <input 
+                    type="text" 
+                    value={priceSearchTerm}
+                    onChange={e => setPriceSearchTerm(e.target.value)}
+                    placeholder="Procurar serviço ou peça..." 
+                    className="w-full pl-6 pr-12 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-[#1b2e85] font-black text-xs uppercase transition-all shadow-inner" 
+                 />
+                 {priceSearchTerm && (
+                   <button onClick={() => setPriceSearchTerm('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 transition-colors">
+                     <X size={18} />
+                   </button>
+                 )}
+               </div>
+            </div>
+
+            <div className="bg-white rounded-[40px] border border-slate-200 shadow-xl overflow-hidden mt-2">
                <table className="w-full text-left">
                   <thead className="bg-[#111827] text-white">
                     <tr>
@@ -530,7 +538,7 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {Object.entries(priceCatalog).length > 0 ? Object.entries(priceCatalog).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => (
+                    {filteredCatalog.length > 0 ? filteredCatalog.map(([key, val]) => (
                       <tr key={key} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
                         <td className="px-8 py-6 font-black text-slate-700 uppercase text-sm tracking-tight">{key}</td>
                         <td className="px-8 py-6 text-right font-black text-[#1b2e85] italic text-xl">R$ {formatCurrency(val as number)}</td>
@@ -547,8 +555,8 @@ const App: React.FC = () => {
                       <tr>
                         <td colSpan={3} className="px-8 py-20 text-center text-slate-400 font-black uppercase tracking-widest text-xs">
                            <div className="flex flex-col items-center gap-4">
-                              <ClipboardList size={40} className="text-slate-200" />
-                              <p>Nenhum serviço cadastrado ainda. Use o formulário azul acima!</p>
+                              <Search size={40} className="text-slate-200" />
+                              <p>{priceSearchTerm ? `Nenhum resultado para "${priceSearchTerm}"` : "Nenhum serviço cadastrado ainda."}</p>
                            </div>
                         </td>
                       </tr>
