@@ -623,7 +623,8 @@ const App: React.FC = () => {
                         {(previewOrder?.serviceItems || []).map((item: ServiceItem, i: number) => (
                           <tr key={i} className="border-t border-slate-100">
                             <td className="px-6 py-4 text-xs uppercase font-black text-slate-700">{item?.description || 'SERVIÇO NÃO DESCRITO'}</td>
-                            <td className="px-6 py-4 text-sm text-right font-black text-slate-300 italic">R$ {formatCurrency(item?.value)}</td>
+                            {/* VALOR REF EM AZUL CONFORME SOLICITADO */}
+                            <td className="px-6 py-4 text-sm text-right font-black text-[#1b2e85] italic">R$ {formatCurrency(item?.value)}</td>
                           </tr>
                         ))}
                       </tbody>
