@@ -19,10 +19,13 @@ import {
   PlusCircle,
   ShieldCheck,
   RefreshCw,
-  X
+  X,
+  CheckCircle2,
+  Clock,
+  Filter
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
-import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem } from './types';
+import { ServiceOrder, VehicleType, PaymentMethod, ServiceItem, PaymentStatus } from './types';
 import Input from './components/Input';
 
 const SUPABASE_URL = 'https://zozuufcvskbmdsppexsy.supabase.co';
@@ -38,6 +41,7 @@ const App: React.FC = () => {
   const [savedOrders, setSavedOrders] = useState<ServiceOrder[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [priceSearchTerm, setPriceSearchTerm] = useState(''); 
+  const [statusFilter, setStatusFilter] = useState<'all' | PaymentStatus>('all');
   const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<ServiceOrder | null>(null);
   
@@ -205,6 +209,7 @@ const App: React.FC = () => {
       serviceItems: [{ description: '', value: 0 }],
       values: { labor: 0, travel: 0 },
       paymentMethod: PaymentMethod.PIX,
+      paymentStatus: PaymentStatus.PENDING,
       observations: '',
       signatures: { client: '', mechanic: '' }
     };
@@ -240,6 +245,29 @@ const App: React.FC = () => {
     } finally { setLoading(false); }
   };
 
+  const handleTogglePaymentStatus = async (targetOrder: ServiceOrder) => {
+    const newStatus = targetOrder.paymentStatus === PaymentStatus.PAID ? PaymentStatus.PENDING : PaymentStatus.PAID;
+    const updatedOrder = { ...targetOrder, paymentStatus: newStatus };
+    
+    // Atualiza localmente
+    const nextOrders = savedOrders.map(o => o.id === targetOrder.id ? updatedOrder : o);
+    setSavedOrders(nextOrders);
+    localStorage.setItem('md_diesel_orders_v2', JSON.stringify(nextOrders));
+
+    // Sincroniza Supabase
+    try {
+      await supabase.from('orders').upsert({
+        id: updatedOrder.id,
+        client_name: updatedOrder.client.name,
+        vehicle_plate: updatedOrder.vehicle.plate,
+        total_value: calculateTotal(updatedOrder),
+        content: updatedOrder
+      });
+    } catch (e) {
+      console.warn("Erro ao atualizar status online:", e);
+    }
+  };
+
   const downloadPDF = async (targetOrder: ServiceOrder) => {
     const element = document.getElementById('pdf-content-to-print');
     if (!element) return;
@@ -259,10 +287,21 @@ const App: React.FC = () => {
   const filteredOrders = useMemo(() => {
     return savedOrders.filter(o => {
       const search = searchTerm.toLowerCase();
-      return (o?.client?.name?.toLowerCase() || '').includes(search) || 
-             (o?.vehicle?.plate?.toLowerCase() || '').includes(search);
+      const matchesSearch = (o?.client?.name?.toLowerCase() || '').includes(search) || 
+                           (o?.vehicle?.plate?.toLowerCase() || '').includes(search);
+      const matchesStatus = statusFilter === 'all' || o.paymentStatus === statusFilter;
+      return matchesSearch && matchesStatus;
     });
-  }, [savedOrders, searchTerm]);
+  }, [savedOrders, searchTerm, statusFilter]);
+
+  const financialSummary = useMemo(() => {
+    return savedOrders.reduce((acc, curr) => {
+      const total = calculateTotal(curr);
+      if (curr.paymentStatus === PaymentStatus.PAID) acc.paid += total;
+      else acc.pending += total;
+      return acc;
+    }, { paid: 0, pending: 0 });
+  }, [savedOrders]);
 
   const filteredCatalog = useMemo(() => {
     const search = priceSearchTerm.toLowerCase().trim();
@@ -281,7 +320,7 @@ const App: React.FC = () => {
           </div>
           <nav className="flex bg-white/10 p-1 rounded-xl backdrop-blur-md border border-white/20">
             <button onClick={() => { setOrder(createInitialOrder(savedOrders, companyProfile)); setActiveTab('form'); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'form' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>NOVA OS</button>
-            <button onClick={() => { setActiveTab('list'); setSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>HISTÓRICO</button>
+            <button onClick={() => { setActiveTab('list'); setSearchTerm(''); setStatusFilter('all'); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'list' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>HISTÓRICO</button>
             <button onClick={() => { setActiveTab('prices'); setPriceSearchTerm(''); }} className={`px-4 sm:px-6 py-2 rounded-lg text-[10px] sm:text-xs font-black transition-all ${activeTab === 'prices' ? 'bg-white text-[#1b2e85] shadow-lg' : 'text-white/70 hover:bg-white/10'}`}>TABELA</button>
           </nav>
         </div>
@@ -418,35 +457,95 @@ const App: React.FC = () => {
 
         {activeTab === 'list' && (
           <div className="space-y-6 animate-in fade-in duration-500 pb-12">
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-               <h2 className="text-xl font-black text-slate-800 uppercase italic">Histórico de OS</h2>
-               <div className="relative w-full sm:w-80">
+            {/* RESUMO FINANCEIRO */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm flex items-center gap-5">
+                <div className="bg-emerald-100 p-4 rounded-2xl text-emerald-600">
+                  <CheckCircle2 size={32} />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Recebido (PAGOS)</p>
+                  <p className="text-2xl font-black text-emerald-600 italic">R$ {formatCurrency(financialSummary.paid)}</p>
+                </div>
+              </div>
+              <div className="bg-white p-6 rounded-[28px] border border-slate-200 shadow-sm flex items-center gap-5">
+                <div className="bg-amber-100 p-4 rounded-2xl text-amber-600">
+                  <Clock size={32} />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">A Receber (PENDENTES)</p>
+                  <p className="text-2xl font-black text-amber-600 italic">R$ {formatCurrency(financialSummary.pending)}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* BARRA DE FERRAMENTAS DO HISTÓRICO */}
+            <div className="bg-white p-6 rounded-[32px] border border-slate-200 shadow-sm flex flex-col lg:flex-row justify-between items-center gap-6">
+               <div className="flex items-center gap-3 self-start lg:self-center">
+                 <Filter size={18} className="text-slate-400" />
+                 <div className="flex bg-slate-100 p-1 rounded-xl">
+                   <button 
+                     onClick={() => setStatusFilter('all')} 
+                     className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${statusFilter === 'all' ? 'bg-[#1b2e85] text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}
+                   >
+                     TODOS
+                   </button>
+                   <button 
+                     onClick={() => setStatusFilter(PaymentStatus.PAID)} 
+                     className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${statusFilter === PaymentStatus.PAID ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}
+                   >
+                     PAGOS
+                   </button>
+                   <button 
+                     onClick={() => setStatusFilter(PaymentStatus.PENDING)} 
+                     className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${statusFilter === PaymentStatus.PENDING ? 'bg-amber-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-200'}`}
+                   >
+                     PENDENTES
+                   </button>
+                 </div>
+               </div>
+               
+               <div className="relative w-full lg:w-96">
                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                 <input type="text" placeholder="Buscar placa ou cliente..." className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-[#1b2e85] font-bold text-xs" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                 <input 
+                   type="text" 
+                   placeholder="Buscar placa ou cliente..." 
+                   className="w-full pl-10 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-[#1b2e85] font-black text-xs uppercase shadow-inner" 
+                   value={searchTerm} 
+                   onChange={e => setSearchTerm(e.target.value)} 
+                 />
                </div>
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredOrders.length > 0 ? filteredOrders.map(item => (
-                <div key={item?.id} className="bg-white rounded-[32px] shadow-sm border border-slate-100 overflow-hidden flex flex-col group border-b-4 border-b-slate-200 hover:border-b-[#1b2e85] transition-all">
+                <div key={item?.id} className="bg-white rounded-[32px] shadow-sm border border-slate-100 overflow-hidden flex flex-col group border-b-4 border-b-slate-200 hover:border-b-[#1b2e85] transition-all relative">
+                  {/* STATUS BADGE */}
+                  <div className={`absolute top-6 right-6 px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${item.paymentStatus === PaymentStatus.PAID ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {item.paymentStatus}
+                  </div>
+
                   <div className="p-7 flex-1">
                     <div className="flex justify-between items-start mb-5">
                       <span className="bg-[#1b2e85] text-white px-4 py-1.5 rounded-xl text-[10px] font-black italic">{item?.id}</span>
-                      <span className="text-[10px] font-black text-slate-300 uppercase">{item?.date}</span>
+                      <span className="text-[10px] font-black text-slate-300 uppercase mt-1">{item?.date}</span>
                     </div>
-                    <h4 className="font-black text-slate-900 text-xl uppercase truncate mb-1">{item?.client?.name || 'Sem Nome'}</h4>
+                    <h4 className="font-black text-slate-900 text-xl uppercase truncate mb-1 pr-16">{item?.client?.name || 'Sem Nome'}</h4>
                     <p className="text-[11px] font-black text-sky-600 uppercase tracking-widest">{item?.vehicle?.plate || '---'}</p>
                     <div className="pt-5 border-t border-slate-50 text-2xl font-black text-[#1b2e85] italic mt-4">R$ {formatCurrency(calculateTotal(item))}</div>
                   </div>
-                  <div className="bg-slate-50 p-5 grid grid-cols-3 gap-3 border-t border-slate-100">
-                    <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo({ top: 0, left: 0 }); }} className="bg-white p-4 rounded-2xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm"><History size={20} /></button>
-                    <button onClick={() => setPreviewOrder(item)} className="bg-white p-4 rounded-2xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm"><Download size={20} /></button>
+                  <div className="bg-slate-50 p-5 grid grid-cols-4 gap-3 border-t border-slate-100">
+                    <button onClick={() => { setOrder(item); setActiveTab('form'); window.scrollTo({ top: 0, left: 0 }); }} className="bg-white p-4 rounded-2xl text-[#1b2e85] border border-slate-200 flex justify-center items-center hover:bg-[#1b2e85] hover:text-white transition-all shadow-sm" title="Editar"><History size={18} /></button>
+                    <button onClick={() => setPreviewOrder(item)} className="bg-white p-4 rounded-2xl text-sky-600 border border-slate-200 flex justify-center items-center hover:bg-sky-600 hover:text-white transition-all shadow-sm" title="PDF"><Download size={18} /></button>
+                    <button onClick={() => handleTogglePaymentStatus(item)} className={`bg-white p-4 rounded-2xl border border-slate-200 flex justify-center items-center transition-all shadow-sm ${item.paymentStatus === PaymentStatus.PAID ? 'text-emerald-500 hover:bg-emerald-500 hover:text-white' : 'text-amber-500 hover:bg-amber-500 hover:text-white'}`} title="Alternar Status Pagamento">
+                      <DollarSign size={18} />
+                    </button>
                     <button onClick={() => { if(window.confirm("Deseja realmente excluir esta OS?")) { 
                       const nextOrders = savedOrders.filter(o => o.id !== item.id);
                       setSavedOrders(nextOrders);
                       localStorage.setItem('md_diesel_orders_v2', JSON.stringify(nextOrders));
                       supabase.from('orders').delete().match({id: item.id});
-                    }}} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20} /></button>
+                    }}} className="bg-white p-4 rounded-2xl text-red-500 border border-slate-200 flex justify-center items-center hover:bg-red-500 hover:text-white transition-all shadow-sm" title="Excluir"><Trash2 size={18} /></button>
                   </div>
                 </div>
               )) : (
@@ -623,7 +722,6 @@ const App: React.FC = () => {
                         {(previewOrder?.serviceItems || []).map((item: ServiceItem, i: number) => (
                           <tr key={i} className="border-t border-slate-100">
                             <td className="px-6 py-4 text-xs uppercase font-black text-slate-700">{item?.description || 'SERVIÇO NÃO DESCRITO'}</td>
-                            {/* VALOR REF EM AZUL CONFORME SOLICITADO */}
                             <td className="px-6 py-4 text-sm text-right font-black text-[#1b2e85] italic">R$ {formatCurrency(item?.value)}</td>
                           </tr>
                         ))}
@@ -632,7 +730,10 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-2 gap-10 items-end mb-16">
-                   <div className="bg-slate-900 text-white p-6 rounded-3xl border-l-8 border-sky-400 shadow-xl">
+                   <div className="bg-slate-900 text-white p-6 rounded-3xl border-l-8 border-sky-400 shadow-xl relative">
+                      <div className={`absolute top-4 right-4 px-3 py-1 rounded-full text-[7px] font-black uppercase tracking-widest ${previewOrder.paymentStatus === PaymentStatus.PAID ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
+                        {previewOrder.paymentStatus}
+                      </div>
                       <p className="text-[8px] font-black text-sky-400 uppercase mb-2 tracking-[0.4em]">MÉTODO DE PAGAMENTO</p>
                       <p className="text-lg font-black uppercase italic tracking-wider">{previewOrder?.paymentMethod || 'PIX'}</p>
                    </div>

@@ -12,6 +12,11 @@ export enum PaymentMethod {
   TRANSFER = 'Transferência'
 }
 
+export enum PaymentStatus {
+  PAID = 'Pago',
+  PENDING = 'Pendente'
+}
+
 export interface ServiceItem {
   description: string;
   value: number;
@@ -49,6 +54,7 @@ export interface ServiceOrder {
     travel: number;
   };
   paymentMethod: PaymentMethod;
+  paymentStatus: PaymentStatus;
   observations: string;
   signatures: {
     client: string;
