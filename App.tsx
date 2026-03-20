@@ -197,13 +197,30 @@ const App: React.FC = () => {
 
   const formatId = (num: number) => `OS-${String(num).padStart(4, '0')}`;
 
+  const formatCpfCnpj = (value: string) => {
+    const v = value.replace(/\D/g, '');
+    if (v.length <= 11) {
+      return v
+        .replace(/(\d{3})(\d)/, '$1.$2')
+        .replace(/(\d{3})(\d)/, '$1.$2')
+        .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+    } else {
+      return v
+        .replace(/^(\d{2})(\d)/, '$1.$2')
+        .replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3')
+        .replace(/\.(\d{3})(\d)/, '.$1/$2')
+        .replace(/(\d{4})(\d)/, '$1-$2')
+        .substring(0, 18);
+    }
+  };
+
   const createInitialOrder = (ordersList: ServiceOrder[], currentCompany: any): ServiceOrder => {
     return {
       id: formatId(getNextNumericId(ordersList)),
       date: new Date().toISOString().split('T')[0],
       company: { ...currentCompany },
       client: { name: '', idNumber: '', phone: '' },
-      mechanic: { name: 'MD Diesel', idNumber: '57833594000139' },
+      mechanic: { name: 'MD Diesel', idNumber: '57.833.594/0001-39' },
       vehicle: { type: VehicleType.TRUCK, brand: '', model: '', plate: '', mileage: '' },
       serviceDescription: '',
       serviceItems: [{ description: '', value: 0 }],
@@ -270,18 +287,48 @@ const App: React.FC = () => {
 
   const downloadPDF = async (targetOrder: ServiceOrder) => {
     const element = document.getElementById('pdf-content-to-print');
+    const modal = document.getElementById('pdf-modal-container');
     if (!element) return;
+    
     setLoading(true);
+
+    // Save and reset scroll to prevent blank space at top
+    const originalScrollTop = modal ? modal.scrollTop : 0;
+    if (modal) {
+      modal.scrollTop = 0;
+    }
+
+    // Wait a brief moment for the DOM to update the scroll position
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const pxWidth = element.scrollWidth;
+    const pxHeight = element.scrollHeight;
+    
+    // Calculates proportional height in mm based on width = 210mm
+    const heightInMm = (pxHeight / pxWidth) * 210;
+    const finalHeight = Math.max(297, heightInMm);
+
     try {
       const opt = {
         margin: 0,
         filename: `OS_${targetOrder.id}.pdf`,
         image: { type: 'jpeg', quality: 1 },
-        html2canvas: { scale: 3, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        html2canvas: {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          scrollY: 0,
+          scrollX: 0
+        },
+        jsPDF: { unit: 'mm', format: [210, finalHeight], orientation: 'portrait' },
       };
       await html2pdf().set(opt).from(element).save();
-    } finally { setLoading(false); }
+    } finally {
+      if (modal) {
+        modal.scrollTop = originalScrollTop;
+      }
+      setLoading(false);
+    }
   };
 
   const filteredOrders = useMemo(() => {
@@ -351,7 +398,7 @@ const App: React.FC = () => {
                   <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Dados do Cliente</h3>
                 </div>
                 <Input label="Nome ou Razão Social" value={order.client?.name || ''} onChange={e => setOrder({...order, client: {...order.client, name: e.target.value}})} placeholder="Nome do cliente" />
-                <Input label="CPF/CNPJ" value={order.client?.idNumber || ''} onChange={e => setOrder({...order, client: {...order.client, idNumber: e.target.value}})} placeholder="000.000.000-00" />
+                <Input label="CPF/CNPJ" value={order.client?.idNumber || ''} onChange={e => setOrder({...order, client: {...order.client, idNumber: formatCpfCnpj(e.target.value)}})} placeholder="000.000.000-00" />
               </section>
 
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 border-t-4 border-t-[#1b2e85]">
@@ -360,7 +407,7 @@ const App: React.FC = () => {
                   <h3 className="font-black text-slate-800 text-[11px] uppercase tracking-widest">Responsável Técnico</h3>
                 </div>
                 <Input label="Nome do Mecânico" value={order.mechanic?.name || ''} onChange={e => setOrder({...order, mechanic: {...order.mechanic, name: e.target.value}})} placeholder="Mecânico responsável" />
-                <Input label="CPF/CNPJ" value={order.mechanic?.idNumber || ''} onChange={e => setOrder({...order, mechanic: {...order.mechanic, idNumber: e.target.value}})} placeholder="000.000.000-00" />
+                <Input label="CPF/CNPJ" value={order.mechanic?.idNumber || ''} onChange={e => setOrder({...order, mechanic: {...order.mechanic, idNumber: formatCpfCnpj(e.target.value)}})} placeholder="000.000.000-00" />
               </section>
 
               <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -668,7 +715,7 @@ const App: React.FC = () => {
       </main>
 
       {previewOrder && (
-        <div className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col items-center p-4 overflow-y-auto no-print backdrop-blur-sm">
+        <div id="pdf-modal-container" className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col items-center p-4 overflow-y-auto no-print backdrop-blur-sm">
             <div className="max-w-[210mm] w-full flex justify-between items-center mb-6 bg-white/10 p-5 rounded-3xl backdrop-blur-xl border border-white/10 shadow-2xl">
                 <button onClick={() => setPreviewOrder(null)} className="text-white font-black text-xs uppercase flex items-center gap-3 hover:text-sky-400 transition-colors"><ArrowLeft size={20}/> VOLTAR AO APP</button>
                 <div className="flex gap-4">
@@ -676,33 +723,33 @@ const App: React.FC = () => {
                   <button onClick={() => window.print()} className="bg-sky-400 text-[#1b2e85] px-8 py-4 rounded-2xl font-black uppercase text-xs flex items-center gap-3 shadow-xl hover:bg-sky-300 transition-all active:scale-95"><Printer size={20}/> IMPRIMIR</button>
                 </div>
             </div>
-            <div id="pdf-content-to-print" className="bg-white w-[210mm] min-h-[297mm] p-[20mm] text-slate-800 shadow-2xl relative flex flex-col mx-auto mb-20 rounded-sm">
-                <div className="border-b-[6px] border-[#1b2e85] pb-8 mb-10 flex justify-between items-end">
+            <div id="pdf-content-to-print" className="bg-white w-[210mm] p-[12mm] text-slate-800 shadow-2xl relative mx-auto mb-20 rounded-sm">
+                <div className="border-b-[4px] border-[#1b2e85] pb-4 mb-6 flex justify-between items-end">
                    <div>
-                      <h2 className="text-5xl font-black text-[#1b2e85] italic leading-none tracking-tighter">{previewOrder?.company?.name || 'MD DIESEL'}</h2>
-                      <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] mt-3">GESTÃO DE MANUTENÇÃO - MECÂNICA PESADA</p>
+                      <h2 className="text-4xl font-black text-[#1b2e85] italic leading-none tracking-tighter">{previewOrder?.company?.name || 'MD DIESEL'}</h2>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mt-2">GESTÃO DE MANUTENÇÃO - MECÂNICA PESADA</p>
                    </div>
                    <div className="text-right">
-                      <div className="bg-[#1b2e85] text-white px-8 py-3 rounded-2xl font-black text-3xl italic shadow-lg">OS: {previewOrder?.id}</div>
-                      <p className="mt-3 font-black text-slate-500 text-[11px] uppercase">EMISSÃO: {previewOrder?.date}</p>
+                      <div className="bg-[#1b2e85] text-white px-6 py-2 rounded-xl font-black text-2xl italic shadow-lg">OS: {previewOrder?.id}</div>
+                      <p className="mt-2 font-black text-slate-500 text-[11px] uppercase">EMISSÃO: {previewOrder?.date}</p>
                    </div>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-6 mb-10">
-                   <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
-                      <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-3 tracking-widest border-b border-slate-200 pb-2">DADOS DO CLIENTE</h4>
-                      <p className="text-sm font-black uppercase mb-1">{previewOrder?.client?.name || 'CONSUMIDOR FINAL'}</p>
+                <div className="grid grid-cols-2 gap-4 mb-5">
+                   <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                      <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest border-b border-slate-200 pb-1.5">DADOS DO CLIENTE</h4>
+                      <p className="text-sm font-black uppercase mb-0.5">{previewOrder?.client?.name || 'CONSUMIDOR FINAL'}</p>
                       <p className="text-[11px] text-slate-500 font-bold uppercase">DOC: {previewOrder?.client?.idNumber || '---'}</p>
                    </div>
-                   <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200">
-                      <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-3 tracking-widest border-b border-slate-200 pb-2">TÉCNICO RESPONSÁVEL</h4>
-                      <p className="text-sm font-black uppercase mb-1">{previewOrder?.mechanic?.name || 'MD DIESEL'}</p>
+                   <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                      <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest border-b border-slate-200 pb-1.5">TÉCNICO RESPONSÁVEL</h4>
+                      <p className="text-sm font-black uppercase mb-0.5">{previewOrder?.mechanic?.name || 'MD DIESEL'}</p>
                       <p className="text-[11px] text-slate-500 font-bold uppercase">CNPJ: {previewOrder?.mechanic?.idNumber || '---'}</p>
                    </div>
                 </div>
 
-                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-200 mb-10">
-                   <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-3 tracking-widest border-b border-slate-200 pb-2">VEÍCULO E DIAGNÓSTICO</h4>
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mb-5">
+                   <h4 className="text-[9px] font-black text-[#1b2e85] uppercase mb-2 tracking-widest border-b border-slate-200 pb-1.5">VEÍCULO E DIAGNÓSTICO</h4>
                    <div className="grid grid-cols-3 gap-4">
                       <div><p className="text-[10px] text-slate-400 font-black uppercase">PLACA</p><p className="text-sm font-black uppercase">{previewOrder?.vehicle?.plate || '---'}</p></div>
                       <div><p className="text-[10px] text-slate-400 font-black uppercase">MARCA/MODELO</p><p className="text-sm font-black uppercase">{previewOrder?.vehicle?.brand || '---'}</p></div>
@@ -710,50 +757,50 @@ const App: React.FC = () => {
                    </div>
                 </div>
 
-                <div className="border border-slate-200 rounded-3xl mb-10 overflow-hidden flex-1 shadow-sm">
+                <div className="border border-slate-200 rounded-2xl mb-5 overflow-hidden shadow-sm">
                    <table className="w-full text-left border-collapse">
                       <thead className="bg-[#f8fafc] border-b border-slate-200">
                         <tr>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">DESCRIÇÃO DOS SERVIÇOS EXECUTADOS</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right text-slate-500 w-40">VALOR REF. (R$)</th>
+                          <th className="px-5 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500">DESCRIÇÃO DOS SERVIÇOS EXECUTADOS</th>
+                          <th className="px-5 py-3 text-[10px] font-black uppercase tracking-widest text-right text-slate-500 w-40">VALOR REF. (R$)</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(previewOrder?.serviceItems || []).map((item: ServiceItem, i: number) => (
                           <tr key={i} className="border-t border-slate-100">
-                            <td className="px-6 py-4 text-xs uppercase font-black text-slate-700">{item?.description || 'SERVIÇO NÃO DESCRITO'}</td>
-                            <td className="px-6 py-4 text-sm text-right font-black text-[#1b2e85] italic">R$ {formatCurrency(item?.value)}</td>
+                            <td className="px-5 py-3 text-xs uppercase font-black text-slate-700">{item?.description || 'SERVIÇO NÃO DESCRITO'}</td>
+                            <td className="px-5 py-3 text-sm text-right font-black text-[#1b2e85] italic">R$ {formatCurrency(item?.value)}</td>
                           </tr>
                         ))}
                       </tbody>
                    </table>
                 </div>
 
-                <div className="grid grid-cols-2 gap-10 items-end mb-16">
-                   <div className="bg-slate-900 text-white p-6 rounded-3xl border-l-8 border-sky-400 shadow-xl relative">
-                      <div className={`absolute top-4 right-4 px-3 py-1 rounded-full text-[7px] font-black uppercase tracking-widest ${previewOrder.paymentStatus === PaymentStatus.PAID ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
+                <div className="grid grid-cols-2 gap-6 items-end mb-8">
+                   <div className="bg-slate-900 text-white p-5 rounded-2xl border-l-8 border-sky-400 shadow-xl relative">
+                      <div className={`absolute top-3 right-3 px-3 py-1 rounded-full text-[7px] font-black uppercase tracking-widest ${previewOrder.paymentStatus === PaymentStatus.PAID ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
                         {previewOrder.paymentStatus}
                       </div>
-                      <p className="text-[8px] font-black text-sky-400 uppercase mb-2 tracking-[0.4em]">MÉTODO DE PAGAMENTO</p>
-                      <p className="text-lg font-black uppercase italic tracking-wider">{previewOrder?.paymentMethod || 'PIX'}</p>
+                      <p className="text-[8px] font-black text-sky-400 uppercase mb-1.5 tracking-[0.4em]">MÉTODO DE PAGAMENTO</p>
+                      <p className="text-base font-black uppercase italic tracking-wider">{previewOrder?.paymentMethod || 'PIX'}</p>
                    </div>
-                   <div className="border-2 border-[#1b2e85] rounded-[32px] overflow-hidden shadow-lg bg-white">
-                      <div className="px-6 py-3 flex justify-between bg-slate-50 border-b border-slate-100 text-[10px] font-black">
+                   <div className="border-2 border-[#1b2e85] rounded-2xl overflow-hidden shadow-lg bg-white">
+                      <div className="px-5 py-2.5 flex justify-between bg-slate-50 border-b border-slate-100 text-[10px] font-black">
                          <span className="text-slate-400 uppercase tracking-widest">MÃO DE OBRA</span>
                          <span className="text-[#1b2e85]">R$ {formatCurrency(previewOrder?.values?.labor || 0)}</span>
                       </div>
-                      <div className="px-6 py-3 flex justify-between bg-slate-50 border-b border-slate-100 text-[10px] font-black">
+                      <div className="px-5 py-2.5 flex justify-between bg-slate-50 border-b border-slate-100 text-[10px] font-black">
                          <span className="text-slate-400 uppercase tracking-widest">DESLOCAMENTO</span>
                          <span className="text-[#1b2e85]">R$ {formatCurrency(previewOrder?.values?.travel || 0)}</span>
                       </div>
-                      <div className="p-6 bg-[#1b2e85] text-white flex justify-between items-center">
+                      <div className="px-5 py-4 bg-[#1b2e85] text-white flex justify-between items-center">
                          <span className="font-black text-xs uppercase tracking-[0.2em]">TOTAL GERAL</span>
-                         <span className="text-4xl font-black italic tracking-tighter">R$ {formatCurrency(calculateTotal(previewOrder as ServiceOrder))}</span>
+                         <span className="text-3xl font-black italic tracking-tighter">R$ {formatCurrency(calculateTotal(previewOrder as ServiceOrder))}</span>
                       </div>
                    </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-20 border-t-2 border-slate-100 pt-10 text-center mt-auto">
+                <div className="grid grid-cols-2 gap-20 border-t-2 border-slate-100 pt-6 text-center">
                    <div className="flex flex-col items-center">
                       <div className="h-0.5 w-full max-w-[200px] bg-slate-300 mb-3"></div>
                       <p className="font-black text-[9px] text-slate-400 uppercase tracking-[0.3em]">ASSINATURA DO CLIENTE</p>
